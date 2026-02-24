@@ -3,7 +3,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::{KelvinResult};
+use crate::KelvinResult;
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -70,7 +70,12 @@ impl AgentEvent {
         }
     }
 
-    pub fn assistant(seq: u64, run_id: impl Into<String>, delta: impl Into<String>, final_chunk: bool) -> Self {
+    pub fn assistant(
+        seq: u64,
+        run_id: impl Into<String>,
+        delta: impl Into<String>,
+        final_chunk: bool,
+    ) -> Self {
         Self {
             seq,
             data: AgentEventData::Assistant {

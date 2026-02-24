@@ -77,6 +77,14 @@ Implemented backends:
 - `InMemoryVectorMemoryManager` (volatile token-overlap index)
 - `FallbackMemoryManager` (primary failure -> fallback)
 
+## WASM Skill Security
+
+`kelvin-wasm` provides ABI-locked WASM skill execution with:
+
+- explicit host ABI (`claw::*`) and import validation
+- sandbox policy presets (`locked_down`, `dev_local`, `hardware_control`)
+- module-size and fuel-budget limits for isolation and stability
+
 Factory routing:
 
 - `MemoryFactory::build(..., MemoryBackendKind::...)`

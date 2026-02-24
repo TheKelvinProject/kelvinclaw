@@ -134,9 +134,7 @@ pub fn check_plugin_compatibility(
     }
 
     let Ok(core_version) = Version::parse(core_version) else {
-        return PluginCompatibilityReport::failure(format!(
-            "invalid core version: {core_version}"
-        ));
+        return PluginCompatibilityReport::failure(format!("invalid core version: {core_version}"));
     };
 
     let mut reasons = Vec::new();
@@ -399,7 +397,10 @@ mod tests {
         let policy = PluginSecurityPolicy::default();
         let report = check_plugin_compatibility(&manifest, "0.1.0", &policy);
         assert!(!report.compatible);
-        assert!(report.reasons.iter().any(|reason| reason.contains("network egress")));
+        assert!(report
+            .reasons
+            .iter()
+            .any(|reason| reason.contains("network egress")));
     }
 
     #[test]

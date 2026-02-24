@@ -10,9 +10,9 @@ use tokio::time;
 
 use kelvin_core::{
     now_ms, AgentEvent, AgentPayload, AgentRunMeta, AgentRunRequest, AgentRunResult, Brain,
-    EventSink, KelvinError, KelvinResult, LifecyclePhase, MemorySearchManager,
-    MemorySearchOptions, ModelInput, ModelProvider, SessionDescriptor, SessionMessage,
-    SessionStore, ToolCallInput, ToolPhase, ToolRegistry,
+    EventSink, KelvinError, KelvinResult, LifecyclePhase, MemorySearchManager, MemorySearchOptions,
+    ModelInput, ModelProvider, SessionDescriptor, SessionMessage, SessionStore, ToolCallInput,
+    ToolPhase, ToolRegistry,
 };
 
 #[derive(Clone)]
@@ -57,8 +57,18 @@ impl OpenClawBrain {
         self.events.emit(event).await
     }
 
-    async fn emit_assistant(&self, run_id: &str, text: &str, final_chunk: bool) -> KelvinResult<()> {
-        let event = AgentEvent::assistant(self.next_seq(), run_id.to_string(), text.to_string(), final_chunk);
+    async fn emit_assistant(
+        &self,
+        run_id: &str,
+        text: &str,
+        final_chunk: bool,
+    ) -> KelvinResult<()> {
+        let event = AgentEvent::assistant(
+            self.next_seq(),
+            run_id.to_string(),
+            text.to_string(),
+            final_chunk,
+        );
         self.events.emit(event).await
     }
 
@@ -83,7 +93,9 @@ impl OpenClawBrain {
 
     async fn run_inner(&self, req: AgentRunRequest) -> KelvinResult<AgentRunResult> {
         if req.prompt.trim().is_empty() {
-            return Err(KelvinError::InvalidInput("prompt must not be empty".to_string()));
+            return Err(KelvinError::InvalidInput(
+                "prompt must not be empty".to_string(),
+            ));
         }
 
         let started_at = now_ms();
@@ -121,7 +133,12 @@ impl OpenClawBrain {
             .unwrap_or_default();
         let memory_snippets = memory_hits
             .iter()
-            .map(|item| format!("{}#{}-{}: {}", item.path, item.start_line, item.end_line, item.snippet))
+            .map(|item| {
+                format!(
+                    "{}#{}-{}: {}",
+                    item.path, item.start_line, item.end_line, item.snippet
+                )
+            })
             .collect::<Vec<_>>();
 
         let model_input = ModelInput {
@@ -143,7 +160,8 @@ impl OpenClawBrain {
 
         let mut payloads = Vec::new();
         if !assistant_text.is_empty() && assistant_text != "NO_REPLY" {
-            self.emit_assistant(&req.run_id, &assistant_text, true).await?;
+            self.emit_assistant(&req.run_id, &assistant_text, true)
+                .await?;
             payloads.push(AgentPayload {
                 text: assistant_text.clone(),
                 is_error: false,
@@ -253,11 +271,9 @@ impl Brain for OpenClawBrain {
             Some(timeout_ms) => {
                 match time::timeout(Duration::from_millis(timeout_ms), self.run_inner(req)).await {
                     Ok(inner_result) => inner_result,
-                    Err(_) => {
-                        Err(KelvinError::Timeout(format!(
-                            "agent run exceeded timeout of {timeout_ms}ms"
-                        )))
-                    }
+                    Err(_) => Err(KelvinError::Timeout(format!(
+                        "agent run exceeded timeout of {timeout_ms}ms"
+                    ))),
                 }
             }
             None => self.run_inner(req).await,

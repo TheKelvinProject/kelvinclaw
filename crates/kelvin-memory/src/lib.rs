@@ -12,8 +12,8 @@ pub use markdown::MarkdownMemoryManager;
 mod tests {
     use std::fs;
     use std::path::PathBuf;
-    use std::sync::Arc;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::Arc;
 
     use async_trait::async_trait;
 
@@ -23,7 +23,10 @@ mod tests {
         MemorySearchResult, MemorySyncParams,
     };
 
-    use crate::{FallbackMemoryManager, InMemoryDocument, InMemoryVectorMemoryManager, MemoryBackendKind, MemoryFactory};
+    use crate::{
+        FallbackMemoryManager, InMemoryDocument, InMemoryVectorMemoryManager, MemoryBackendKind,
+        MemoryFactory,
+    };
 
     struct FailingMemoryManager;
 
@@ -34,11 +37,15 @@ mod tests {
             _query: &str,
             _opts: MemorySearchOptions,
         ) -> KelvinResult<Vec<MemorySearchResult>> {
-            Err(KelvinError::Backend("primary backend unavailable".to_string()))
+            Err(KelvinError::Backend(
+                "primary backend unavailable".to_string(),
+            ))
         }
 
         async fn read_file(&self, _params: MemoryReadParams) -> KelvinResult<MemoryReadResult> {
-            Err(KelvinError::Backend("primary backend unavailable".to_string()))
+            Err(KelvinError::Backend(
+                "primary backend unavailable".to_string(),
+            ))
         }
 
         fn status(&self) -> MemoryProviderStatus {
@@ -56,7 +63,9 @@ mod tests {
         }
 
         async fn sync(&self, _params: Option<MemorySyncParams>) -> KelvinResult<()> {
-            Err(KelvinError::Backend("primary backend unavailable".to_string()))
+            Err(KelvinError::Backend(
+                "primary backend unavailable".to_string(),
+            ))
         }
 
         async fn probe_embedding_availability(&self) -> KelvinResult<MemoryEmbeddingProbeResult> {
@@ -75,8 +84,10 @@ mod tests {
 
     fn unique_temp_dir() -> PathBuf {
         let suffix = TEST_COUNTER.fetch_add(1, Ordering::SeqCst);
-        let dir = std::env::temp_dir()
-            .join(format!("kelvin-memory-test-{}-{suffix}", kelvin_core::now_ms()));
+        let dir = std::env::temp_dir().join(format!(
+            "kelvin-memory-test-{}-{suffix}",
+            kelvin_core::now_ms()
+        ));
         let _ = fs::remove_dir_all(&dir);
         fs::create_dir_all(&dir).expect("create test temp dir");
         dir

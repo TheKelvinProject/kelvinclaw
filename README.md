@@ -57,6 +57,13 @@ Key types in `kelvin-wasm`:
 - `WasmSkillHost`
 - `SandboxPolicy`
 - `ClawCall`
+- `SandboxPreset`
+
+Run a `.wasm` skill with the native executive:
+
+```bash
+cargo run -p kelvin-wasm --bin kelvin-wasm-runner -- --wasm path/to/skill.wasm --policy-preset locked_down
+```
 
 ## Memory Backend Swapping
 
@@ -113,4 +120,10 @@ Build the sample Rust WASM skill:
 
 ```bash
 cargo build --target wasm32-unknown-unknown --manifest-path skills/echo-wasm-skill/Cargo.toml
+```
+
+Run the sample skill:
+
+```bash
+cargo run -p kelvin-wasm --bin kelvin-wasm-runner -- --wasm skills/echo-wasm-skill/target/wasm32-unknown-unknown/debug/echo_wasm_skill.wasm
 ```

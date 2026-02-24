@@ -24,12 +24,12 @@ impl EchoModelProvider {
 
         while let Some(start) = cursor.find("[[tool:") {
             let rest = &cursor[start + "[[tool:".len()..];
-            let Some(end) = rest.find("]]" ) else {
+            let Some(end) = rest.find("]]") else {
                 break;
             };
             let body = rest[..end].trim();
             let mut split = body.splitn(2, char::is_whitespace);
-            let name = split.next().unwrap_or("" ).trim();
+            let name = split.next().unwrap_or("").trim();
             if name.is_empty() {
                 cursor = &rest[end + 2..];
                 continue;

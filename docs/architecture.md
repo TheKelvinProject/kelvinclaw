@@ -124,6 +124,9 @@ Selection:
 - host ABI imports exposed under `claw::*` (for example `send_message`, `move_servo`)
 - `SandboxPolicy` controls which privileged imports are linked
 - denied capabilities fail module instantiation before skill execution
+- module size and fuel budget limits are enforced for DoS resistance
+
+`kelvin-wasm-runner` provides a minimal host CLI for executing skill binaries with policy presets.
 
 ## Execution Flow
 

@@ -228,8 +228,16 @@ async fn e2e_events_are_complete_and_ordered_and_tool_execution_is_deterministic
     let tool_calls = Arc::new(Mutex::new(Vec::new()));
 
     let tools = Arc::new(MapToolRegistry::from_tools(vec![
-        Arc::new(RecordingTool::new("first", "first-output", tool_calls.clone())),
-        Arc::new(RecordingTool::new("second", "second-output", tool_calls.clone())),
+        Arc::new(RecordingTool::new(
+            "first",
+            "first-output",
+            tool_calls.clone(),
+        )),
+        Arc::new(RecordingTool::new(
+            "second",
+            "second-output",
+            tool_calls.clone(),
+        )),
     ]));
 
     let model = Arc::new(StubModelProvider {
@@ -253,7 +261,10 @@ async fn e2e_events_are_complete_and_ordered_and_tool_execution_is_deterministic
         event_sink.clone(),
     );
 
-    let result = brain.run(request("run tools", None)).await.expect("brain run");
+    let result = brain
+        .run(request("run tools", None))
+        .await
+        .expect("brain run");
     let payload_text = result
         .payloads
         .iter()
@@ -282,13 +293,19 @@ async fn e2e_events_are_complete_and_ordered_and_tool_execution_is_deterministic
     assert!(matches!(history[0].role, kelvin_core::SessionRole::User));
     assert!(matches!(history[1].role, kelvin_core::SessionRole::Tool));
     assert!(matches!(history[2].role, kelvin_core::SessionRole::Tool));
-    assert!(matches!(history[3].role, kelvin_core::SessionRole::Assistant));
+    assert!(matches!(
+        history[3].role,
+        kelvin_core::SessionRole::Assistant
+    ));
 
     let events = event_sink.all().await;
     assert!(events.len() >= 7, "expected full lifecycle and tool events");
 
     for pair in events.windows(2) {
-        assert!(pair[0].seq < pair[1].seq, "event sequence must be increasing");
+        assert!(
+            pair[0].seq < pair[1].seq,
+            "event sequence must be increasing"
+        );
     }
 
     assert!(matches!(

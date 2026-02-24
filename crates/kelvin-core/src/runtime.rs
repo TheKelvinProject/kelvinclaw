@@ -326,7 +326,11 @@ impl CoreRuntime {
         self.registry.wait(run_id, timeout_ms).await
     }
 
-    pub async fn wait_for_outcome(&self, run_id: &str, timeout_ms: u64) -> KelvinResult<RunOutcome> {
+    pub async fn wait_for_outcome(
+        &self,
+        run_id: &str,
+        timeout_ms: u64,
+    ) -> KelvinResult<RunOutcome> {
         let wait_result = self.wait(run_id, timeout_ms).await?;
         match wait_result.status {
             WaitStatus::Timeout => Ok(RunOutcome::Timeout),
@@ -443,7 +447,10 @@ mod tests {
         let object = value.as_object().expect("serialized object");
         let mut found = object.keys().cloned().collect::<Vec<_>>();
         found.sort();
-        let mut expected = keys.iter().map(|value| value.to_string()).collect::<Vec<_>>();
+        let mut expected = keys
+            .iter()
+            .map(|value| value.to_string())
+            .collect::<Vec<_>>();
         expected.sort();
         assert_eq!(found, expected);
     }
@@ -569,7 +576,10 @@ mod tests {
         let wait = runtime.wait("run-schema", 2_000).await.expect("wait");
         assert_eq!(wait.status, WaitStatus::Ok);
         let wait_json = serde_json::to_value(wait).expect("wait json");
-        assert_object_keys(&wait_json, &["status", "started_at_ms", "ended_at_ms", "error"]);
+        assert_object_keys(
+            &wait_json,
+            &["status", "started_at_ms", "ended_at_ms", "error"],
+        );
 
         let outcome = runtime
             .wait_for_outcome("run-schema", 2_000)
@@ -580,7 +590,10 @@ mod tests {
                 let result_json = serde_json::to_value(result).expect("result json");
                 assert_object_keys(&result_json, &["payloads", "meta"]);
                 let meta = &result_json["meta"];
-                assert_object_keys(meta, &["duration_ms", "provider", "model", "stop_reason", "error"]);
+                assert_object_keys(
+                    meta,
+                    &["duration_ms", "provider", "model", "stop_reason", "error"],
+                );
             }
             _ => panic!("expected completed outcome"),
         }

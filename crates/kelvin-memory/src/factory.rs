@@ -29,7 +29,10 @@ impl MemoryBackendKind {
 pub struct MemoryFactory;
 
 impl MemoryFactory {
-    pub fn build(workspace_dir: impl AsRef<Path>, kind: MemoryBackendKind) -> Arc<dyn MemorySearchManager> {
+    pub fn build(
+        workspace_dir: impl AsRef<Path>,
+        kind: MemoryBackendKind,
+    ) -> Arc<dyn MemorySearchManager> {
         let workspace_dir = workspace_dir.as_ref();
 
         match kind {

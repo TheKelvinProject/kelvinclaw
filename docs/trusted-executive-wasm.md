@@ -19,6 +19,7 @@ This layer holds all privileged capability decisions.
 ## WASM Skill Interface (`ClawCall`)
 
 Host ABI module: `claw`
+ABI version: `1.0.0`
 
 Supported imports:
 
@@ -39,6 +40,17 @@ Skills that import capabilities not granted by policy are rejected at instantiat
 
 Default is locked-down (`false` for all privileged capabilities).
 
+Built-in presets:
+
+- `locked_down`: no privileged capabilities
+- `dev_local`: enables `fs_read` only
+- `hardware_control`: enables `move_servo` only
+
+Additional hardening knobs:
+
+- `max_module_bytes`: hard limit on wasm binary size before compilation
+- `fuel_budget`: execution fuel cap to terminate runaway guest loops
+
 ## Fort Knox Behavior
 
 If a downloaded skill asks for filesystem/network capability without policy approval:
@@ -55,3 +67,6 @@ If a downloaded skill asks for filesystem/network capability without policy appr
 - denied filesystem calls are rejected
 - policy-enabled filesystem calls succeed
 - modules requiring WASI imports are rejected by default
+- unknown ABI imports are rejected
+- oversized modules are rejected before compile
+- infinite loops are interrupted by fuel exhaustion
