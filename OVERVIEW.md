@@ -26,7 +26,7 @@ A literal `OVERVIEW.md` was not present in the cloned `openclaw` repository. Thi
 - `crates/kelvin-core`: domain contracts and traits.
 - `crates/kelvin-memory`: memory backends and fallback wrapper.
 - `crates/kelvin-brain`: OpenClaw-style orchestration loop (`OpenClawBrain`).
-- `crates/kelvin-runtime`: lane scheduler, run registry, adapters.
+- `archive/kelvin-runtime`: archived lane scheduler, run registry, adapters.
 - `archive/kelvin-cli`: archived runnable composition layer (excluded from workspace members).
 
 ## Primary Interfaces (Plug-and-Play Boundaries)

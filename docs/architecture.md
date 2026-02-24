@@ -25,7 +25,7 @@ The intent is to keep the "brains" (orchestration and contracts) stable while en
 - `crates/kelvin-core`: domain models and interfaces.
 - `crates/kelvin-memory`: memory backend implementations and backend selection.
 - `crates/kelvin-brain`: agent loop orchestration implementation.
-- `crates/kelvin-runtime`: scheduling, run lifecycle, and concrete adapters.
+- `archive/kelvin-runtime`: archived scheduling, run lifecycle, and concrete adapters.
 - `archive/kelvin-cli`: archived executable composition and local operator UX (not active workspace member).
 
 ## Core Interfaces
@@ -63,7 +63,7 @@ These traits are the architecture's stable API.
 8. Persist assistant/tool transcript entries.
 9. Emit lifecycle end or error.
 
-### Runtime (`kelvin-runtime`)
+### Runtime (`kelvin-runtime`, archived)
 
 `AgentRuntime` provides asynchronous run handling:
 

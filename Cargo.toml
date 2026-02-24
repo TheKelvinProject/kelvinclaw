@@ -3,7 +3,6 @@ members = [
   "crates/kelvin-core",
   "crates/kelvin-memory",
   "crates/kelvin-brain",
-  "crates/kelvin-runtime",
 ]
 resolver = "2"
 

@@ -15,7 +15,7 @@ Workspace crates:
 - `crates/kelvin-core`: contracts and shared types
 - `crates/kelvin-memory`: memory backends + fallback manager
 - `crates/kelvin-brain`: agent loop orchestration
-- `crates/kelvin-runtime`: run registry, lane scheduler, adapters
+- `archive/kelvin-runtime`: archived run registry, lane scheduler, adapters
 - `archive/kelvin-cli`: archived executable wiring (not in workspace members)
 
 ## Interface-First Design
