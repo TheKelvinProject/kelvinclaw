@@ -1,5 +1,5 @@
-pub mod openclaw_brain;
+pub mod kelvin_brain;
 pub mod providers;
 
-pub use openclaw_brain::OpenClawBrain;
+pub use kelvin_brain::KelvinBrain;
 pub use providers::EchoModelProvider;

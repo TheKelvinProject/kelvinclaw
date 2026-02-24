@@ -2,7 +2,7 @@
 
 ## Purpose
 
-KelvinClaw is a Rust, interface-first agent runtime that mirrors OpenClaw's core architecture patterns:
+KelvinClaw is a Rust, interface-first agent runtime that mirrors KelvinClaw's core architecture patterns:
 
 - run acceptance + async completion (`agent` / `agent.wait` style)
 - per-session serialized execution lanes
@@ -66,7 +66,7 @@ These traits are the architecture's stable API.
 
 ### Brain (`kelvin-brain`)
 
-`OpenClawBrain` orchestrates one run end-to-end:
+`KelvinBrain` orchestrates one run end-to-end:
 
 1. Validate request.
 2. Emit lifecycle start.
@@ -135,7 +135,7 @@ Selection:
 1. CLI builds concrete dependencies.
 2. CLI submits run to `AgentRuntime`.
 3. Runtime registers run + schedules execution in session lane.
-4. `OpenClawBrain` executes orchestration loop.
+4. `KelvinBrain` executes orchestration loop.
 5. Events stream through `EventSink`.
 6. Run completion/failure is stored in `RunRegistry`.
 7. Caller waits for final status/outcome.
@@ -148,7 +148,7 @@ Selection:
 - `assistant` (delta/final chunks)
 - `tool` (`start | end | error`)
 
-This aligns with OpenClaw-style stream channels while remaining transport-agnostic.
+This aligns with KelvinClaw-style stream channels while remaining transport-agnostic.
 
 ## Extensibility and Swap Points
 
@@ -194,7 +194,7 @@ Current tests validate architecture behavior over implementation details:
 Implemented:
 
 - trait-oriented architecture and crate boundaries
-- OpenClaw-style run/event/memory seams
+- KelvinClaw-style run/event/memory seams
 - swappable backends and adapters
 - remote test workflow
 

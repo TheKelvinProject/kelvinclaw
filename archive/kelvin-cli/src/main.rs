@@ -2,7 +2,7 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use kelvin_brain::{EchoModelProvider, OpenClawBrain};
+use kelvin_brain::{EchoModelProvider, KelvinBrain};
 use kelvin_core::{now_ms, AgentRunRequest, KelvinError, KelvinResult};
 use kelvin_memory::{MemoryBackendKind, MemoryFactory};
 use kelvin_runtime::{
@@ -107,7 +107,7 @@ async fn run(config: CliConfig) -> KelvinResult<()> {
 
     let memory = MemoryFactory::build(&config.workspace_dir, config.memory_backend);
     let model = Arc::new(EchoModelProvider::new("kelvin", "echo-v1"));
-    let brain = Arc::new(OpenClawBrain::new(
+    let brain = Arc::new(KelvinBrain::new(
         session_store,
         memory,
         model,

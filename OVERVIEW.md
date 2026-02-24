@@ -1,6 +1,6 @@
 # KelvinClaw Overview
 
-This repository implements a Rust architecture that mirrors OpenClaw's core runtime seams:
+This repository implements a Rust architecture that mirrors KelvinClaw's core runtime seams:
 
 - Gateway-style run model: `submit` + `wait` with a run registry.
 - Serialized agent loop per session lane.
@@ -10,9 +10,9 @@ This repository implements a Rust architecture that mirrors OpenClaw's core runt
 
 SDK naming: the extension contract layer is called **Kelvin Core**.
 
-## OpenClaw Sources Used
+## KelvinClaw Sources Used
 
-A literal `OVERVIEW.md` was not present in the cloned `openclaw` repository. This design is grounded in:
+A literal `OVERVIEW.md` was not present in the cloned `KelvinClaw` repository. This design is grounded in:
 
 - `docs/concepts/architecture.md`
 - `docs/concepts/agent-loop.md`
@@ -27,7 +27,7 @@ A literal `OVERVIEW.md` was not present in the cloned `openclaw` repository. Thi
 
 - `crates/kelvin-core`: domain contracts and traits.
 - `crates/kelvin-memory`: memory backends and fallback wrapper.
-- `crates/kelvin-brain`: OpenClaw-style orchestration loop (`OpenClawBrain`).
+- `crates/kelvin-brain`: KelvinClaw-style orchestration loop (`KelvinBrain`).
 - `crates/kelvin-wasm`: trusted native executive for untrusted WASM skill execution.
 - `archive/kelvin-runtime`: archived lane scheduler, run registry, adapters.
 - `archive/kelvin-cli`: archived runnable composition layer (excluded from workspace members).
@@ -62,7 +62,7 @@ You can replace any implementation as long as it satisfies these traits.
 
 ## Memory Architecture
 
-The memory layer follows OpenClaw's contract style:
+The memory layer follows KelvinClaw's contract style:
 
 - `search(query, opts)`
 - `read_file(rel_path, from, lines)`
@@ -91,7 +91,7 @@ Factory routing:
 
 ## Brain Loop
 
-`OpenClawBrain` follows these phases:
+`KelvinBrain` follows these phases:
 
 1. Validate request and emit lifecycle `start`.
 2. Persist user input to session store.
@@ -115,9 +115,9 @@ Scheduling:
 - `LaneScheduler` serializes execution per `session_key`.
 - Optional global lane lock is supported.
 
-## Current Scope vs OpenClaw
+## Current Scope vs KelvinClaw
 
-This repo now mirrors OpenClaw's architecture and contracts, not full feature parity.
+This repo now mirrors KelvinClaw's architecture and contracts, not full feature parity.
 
 Included:
 

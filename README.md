@@ -1,6 +1,6 @@
 # kelvinclaw
 
-Rust re-architecture of OpenClaw-style "brain" + memory/runtime seams with strict interfaces for plug-and-play implementations.
+Rust re-architecture of KelvinClaw-style "brain" + memory/runtime seams with strict interfaces for plug-and-play implementations.
 
 SDK name: **Kelvin Core**.
 
@@ -10,7 +10,7 @@ See:
 
 - [OVERVIEW.md](OVERVIEW.md)
 - [docs/architecture.md](docs/architecture.md)
-- [docs/openclaw-gap-analysis.md](docs/openclaw-gap-analysis.md)
+- [docs/KelvinClaw-gap-analysis.md](docs/KelvinClaw-gap-analysis.md)
 - [docs/KELVIN_CORE_SDK.md](docs/KELVIN_CORE_SDK.md)
 - [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md)
 - [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md)
@@ -73,7 +73,7 @@ cargo run -p kelvin-wasm --bin kelvin-wasm-runner -- --wasm path/to/skill.wasm -
 - `InMemoryVector`
 - `InMemoryWithMarkdownFallback`
 
-The fallback manager mimics OpenClaw's primary->fallback behavior.
+The fallback manager mimics KelvinClaw's primary->fallback behavior.
 
 ## CLI Example
 
