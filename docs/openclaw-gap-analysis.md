@@ -48,10 +48,10 @@ OpenClaw signals:
 
 KelvinClaw mapping:
 
-- `archive/kelvin-runtime::RunRegistry` (archived reference implementation)
-- `archive/kelvin-runtime::AgentRuntime::submit`
-- `archive/kelvin-runtime::AgentRuntime::wait`
-- `archive/kelvin-runtime::AgentRuntime::wait_for_outcome`
+- `kelvin-core::RunRegistry`
+- `kelvin-core::CoreRuntime::submit`
+- `kelvin-core::CoreRuntime::wait`
+- `kelvin-core::CoreRuntime::wait_for_outcome`
 
 ## Interface Inventory
 
@@ -64,6 +64,10 @@ Implemented in `kelvin-core`:
 - `EventSink`
 - `Tool`
 - `ToolRegistry`
+- `PluginFactory`
+- `PluginRegistry`
+- `CoreRuntime`
+- `RunRegistry`
 
 ## Plug-and-Play Examples
 
@@ -77,7 +81,7 @@ Implemented in `kelvin-core`:
 
 ## Tests Added
 
-`archive/kelvin-runtime/src/agent_runtime.rs`:
+`crates/kelvin-core/src/runtime.rs`:
 
 - serializes runs in same session lane
 - wait timeout behavior

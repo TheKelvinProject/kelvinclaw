@@ -2,6 +2,8 @@
 
 Rust re-architecture of OpenClaw-style "brain" + memory/runtime seams with strict interfaces for plug-and-play implementations.
 
+SDK name: **Kelvin Core**.
+
 ## Architecture
 
 See:
@@ -9,6 +11,7 @@ See:
 - [OVERVIEW.md](OVERVIEW.md)
 - [docs/architecture.md](docs/architecture.md)
 - [docs/openclaw-gap-analysis.md](docs/openclaw-gap-analysis.md)
+- [docs/KELVIN_CORE_SDK.md](docs/KELVIN_CORE_SDK.md)
 - [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md)
 - [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md)
 
@@ -33,6 +36,8 @@ Main traits:
 - `SessionStore`
 - `Tool` / `ToolRegistry`
 - `EventSink`
+- `PluginFactory` / `PluginRegistry` (Kelvin Core SDK)
+- `CoreRuntime` / `RunRegistry` (core lifecycle state machine)
 
 Everything in the runtime is composed with trait objects so concrete implementations can be swapped.
 

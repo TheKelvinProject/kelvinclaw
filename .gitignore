@@ -14,3 +14,4 @@
 # Local env/config overrides
 .env
 .env.local
+local_docs/*

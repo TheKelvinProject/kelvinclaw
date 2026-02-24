@@ -201,6 +201,9 @@ impl MemorySearchManager for MarkdownMemoryManager {
             b.score
                 .partial_cmp(&a.score)
                 .unwrap_or(std::cmp::Ordering::Equal)
+                .then_with(|| a.path.cmp(&b.path))
+                .then_with(|| a.start_line.cmp(&b.start_line))
+                .then_with(|| a.end_line.cmp(&b.end_line))
         });
         results.truncate(opts.max_results.max(1));
 

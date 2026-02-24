@@ -23,6 +23,7 @@ The intent is to keep the "brains" (orchestration and contracts) stable while en
 
 ## Governance Documents
 
+- [docs/KELVIN_CORE_SDK.md](docs/KELVIN_CORE_SDK.md)
 - [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md)
 - [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md)
 
@@ -48,6 +49,10 @@ Defined in `kelvin-core`:
   - model inference boundary
 - `Tool` and `ToolRegistry`
   - tool invocation and discovery
+- `PluginFactory` and `PluginRegistry`
+  - plugin declaration, compatibility checks, and registration
+- `CoreRuntime` and `RunRegistry`
+  - run lifecycle (`accepted -> running -> completed|failed`) and wait semantics
 - `SessionStore`
   - transcript/session persistence boundary
 - `EventSink`
@@ -71,7 +76,18 @@ These traits are the architecture's stable API.
 8. Persist assistant/tool transcript entries.
 9. Emit lifecycle end or error.
 
-### Runtime (`kelvin-runtime`, archived)
+### Runtime (`kelvin-core`)
+
+`CoreRuntime` provides asynchronous run handling:
+
+- `submit` returns immediate acceptance metadata.
+- run executes in a background task.
+- run state is persisted in `RunRegistry`.
+- caller can inspect state and `wait` for completion with timeout.
+
+`LaneScheduler` ensures per-session serialization.
+
+### Runtime Archive (`archive/kelvin-runtime`)
 
 `AgentRuntime` provides asynchronous run handling:
 

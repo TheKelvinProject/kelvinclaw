@@ -1,6 +1,6 @@
-# KelvinClaw SDK Principles
+# Kelvin Core SDK Principles
 
-This document defines the plugin and extension contract for KelvinClaw. The goal is a lightweight core with powerful, swappable implementations.
+This document defines the plugin and extension contract for Kelvin Core. The goal is a lightweight core with powerful, swappable implementations.
 
 ## SDK Goals
 
@@ -12,7 +12,7 @@ This document defines the plugin and extension contract for KelvinClaw. The goal
 
 ## Extension Surfaces
 
-Kelvin currently exposes extension points through core traits:
+Kelvin Core exposes extension points through core traits:
 
 - `ModelProvider`
 - `MemorySearchManager`
@@ -75,4 +75,4 @@ Recommended minimum:
 - Record plugin name/version in run metadata where possible.
 - Expose health/status checks for long-running components.
 
-These guardrails keep Kelvin "small core, big ecosystem" without compromising stability or trust.
+These guardrails keep Kelvin Core "small core, big ecosystem" without compromising stability or trust.

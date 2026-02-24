@@ -142,4 +142,44 @@ mod tests {
             assert!(!hits.is_empty());
         }
     }
+
+    #[tokio::test]
+    async fn markdown_search_tie_breaker_is_deterministic() {
+        let temp_dir = unique_temp_dir();
+        fs::create_dir_all(temp_dir.join("memory")).expect("create memory dir");
+        fs::write(temp_dir.join("memory").join("b.md"), "router").expect("write b");
+        fs::write(temp_dir.join("memory").join("a.md"), "router").expect("write a");
+
+        let manager = crate::MarkdownMemoryManager::new(&temp_dir);
+        let hits = manager
+            .search("router", MemorySearchOptions::default())
+            .await
+            .expect("search");
+
+        let paths = hits.iter().map(|hit| hit.path.as_str()).collect::<Vec<_>>();
+        assert_eq!(paths, vec!["memory/a.md", "memory/b.md"]);
+    }
+
+    #[tokio::test]
+    async fn in_memory_search_tie_breaker_is_deterministic() {
+        let manager = InMemoryVectorMemoryManager::new(vec![
+            InMemoryDocument {
+                path: "z.md".to_string(),
+                text: "router".to_string(),
+                source: kelvin_core::MemorySource::Memory,
+            },
+            InMemoryDocument {
+                path: "a.md".to_string(),
+                text: "router".to_string(),
+                source: kelvin_core::MemorySource::Memory,
+            },
+        ]);
+
+        let hits = manager
+            .search("router", MemorySearchOptions::default())
+            .await
+            .expect("search");
+        let paths = hits.iter().map(|hit| hit.path.as_str()).collect::<Vec<_>>();
+        assert_eq!(paths, vec!["a.md", "z.md"]);
+    }
 }

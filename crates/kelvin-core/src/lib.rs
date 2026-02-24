@@ -3,6 +3,8 @@ pub mod error;
 pub mod events;
 pub mod memory;
 pub mod model;
+pub mod runtime;
+pub mod sdk;
 pub mod sessions;
 pub mod tools;
 
@@ -11,5 +13,7 @@ pub use error::*;
 pub use events::*;
 pub use memory::*;
 pub use model::*;
+pub use runtime::*;
+pub use sdk::*;
 pub use sessions::*;
 pub use tools::*;

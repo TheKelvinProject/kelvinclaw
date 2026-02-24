@@ -8,6 +8,8 @@ This repository implements a Rust architecture that mirrors OpenClaw's core runt
 - Pluggable memory manager with backend fallback.
 - Trait-first wiring so implementations can be swapped without changing the brain.
 
+SDK naming: the extension contract layer is called **Kelvin Core**.
+
 ## OpenClaw Sources Used
 
 A literal `OVERVIEW.md` was not present in the cloned `openclaw` repository. This design is grounded in:
@@ -33,6 +35,7 @@ A literal `OVERVIEW.md` was not present in the cloned `openclaw` repository. Thi
 
 KelvinClaw now formalizes "small core, extensible ecosystem" rules:
 
+- [docs/KELVIN_CORE_SDK.md](docs/KELVIN_CORE_SDK.md): 8-part Kelvin Core SDK implementation.
 - [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md): strict criteria for what can enter `kelvin-core`.
 - [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md): plugin/SDK expectations for stability, safety, and security.
 
@@ -47,6 +50,10 @@ From `kelvin-core`:
 - `ModelProvider`
 - `SessionStore`
 - `EventSink`
+- `PluginFactory`
+- `PluginRegistry`
+- `CoreRuntime`
+- `RunRegistry`
 - `Tool` / `ToolRegistry`
 
 You can replace any implementation as long as it satisfies these traits.
