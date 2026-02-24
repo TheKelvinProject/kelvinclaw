@@ -101,6 +101,19 @@ echo "[remote-test] host=${HOST} mode=${MODE} remote_dir=${REMOTE_DIR}"
 echo "[remote-test] checking SSH connectivity"
 ssh -o BatchMode=yes -o ConnectTimeout=8 "${HOST}" 'echo ok >/dev/null'
 
+if [[ "${MODE}" == "docker" ]]; then
+  echo "[remote-test] checking remote Docker access"
+  if ! ssh "${HOST}" "docker info >/dev/null 2>&1"; then
+    cat >&2 <<MSG
+Remote Docker mode requested, but the current SSH user cannot access the Docker daemon.
+Use one of:
+  1) scripts/remote-test.sh --native
+  2) grant this remote user Docker daemon access (for example docker group membership)
+MSG
+    exit 1
+  fi
+fi
+
 if [[ "${DO_SYNC}" == "1" ]]; then
   echo "[remote-test] syncing repository"
   if command -v rsync >/dev/null 2>&1; then

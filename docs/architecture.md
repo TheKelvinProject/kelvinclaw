@@ -19,6 +19,14 @@ The intent is to keep the "brains" (orchestration and contracts) stable while en
 3. Deterministic orchestration: session-lane serialization avoids race conditions.
 4. Failure containment: optional fallback managers prevent hard failures when a primary backend is unavailable.
 5. Small surface area: each crate has a focused responsibility and clear boundaries.
+6. Minimal core: provider/runtime specifics belong outside core contracts.
+
+## Governance Documents
+
+- [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md)
+- [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md)
+
+Use these as merge criteria when deciding whether logic belongs in core or in extensions.
 
 ## Workspace Topology
 
@@ -158,7 +166,7 @@ Implemented:
 - trait-oriented architecture and crate boundaries
 - OpenClaw-style run/event/memory seams
 - swappable backends and adapters
-- runnable CLI and remote test workflow
+- remote test workflow
 
 Not yet implemented:
 

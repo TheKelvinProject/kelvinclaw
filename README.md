@@ -9,12 +9,17 @@ See:
 - [OVERVIEW.md](OVERVIEW.md)
 - [docs/architecture.md](docs/architecture.md)
 - [docs/openclaw-gap-analysis.md](docs/openclaw-gap-analysis.md)
+- [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md)
+- [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md)
 
 Workspace crates:
 
 - `crates/kelvin-core`: contracts and shared types
 - `crates/kelvin-memory`: memory backends + fallback manager
 - `crates/kelvin-brain`: agent loop orchestration
+
+Archived crates:
+
 - `archive/kelvin-runtime`: archived run registry, lane scheduler, adapters
 - `archive/kelvin-cli`: archived executable wiring (not in workspace members)
 
@@ -70,6 +75,14 @@ scripts/remote-test.sh --docker
 scripts/remote-test.sh --host ec2-user@your-host --cargo-args '-- --nocapture'
 ```
 
-## Note
+## Local Test
 
-Rust toolchain commands (`cargo`, `rustc`) were not available in the current execution environment, so compile/test commands could not be run here.
+```bash
+cargo test --workspace
+```
+
+Docker:
+
+```bash
+docker run --rm -v "$PWD:/work" -w /work rust:1.77 cargo test --workspace
+```
