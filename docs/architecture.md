@@ -53,6 +53,8 @@ Defined in `kelvin-core`:
   - tool invocation and discovery
 - `PluginFactory` and `PluginRegistry`
   - plugin declaration, compatibility checks, and registration
+- `SdkToolRegistry`
+  - validated projection from plugin metadata into runtime `ToolRegistry`
 - `CoreRuntime` and `RunRegistry`
   - run lifecycle (`accepted -> running -> completed|failed`) and wait semantics
 - `SessionStore`
@@ -162,7 +164,7 @@ Replace `Arc<dyn ModelProvider>` to support different provider implementations.
 
 ### Tools
 
-Register tools through `ToolRegistry`; tool execution path is unchanged.
+Register tools through `ToolRegistry`; `SdkToolRegistry` can compose this directly from SDK plugin registrations with fail-fast validation.
 
 ### Sessions
 

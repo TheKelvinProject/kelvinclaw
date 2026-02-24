@@ -6,11 +6,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use async_trait::async_trait;
 use tokio::sync::RwLock;
 
-use kelvin_brain::{EchoModelProvider, KelvinBrain, WasmSkillTool};
+use kelvin_brain::{EchoModelProvider, KelvinBrain, WasmSkillPlugin};
 use kelvin_core::{
-    AgentEvent, AgentEventData, AgentRunRequest, CoreRuntime, EventSink, KelvinResult,
-    LifecyclePhase, MemorySearchManager, SessionDescriptor, SessionMessage, SessionStore, Tool,
-    ToolPhase, ToolRegistry,
+    AgentEvent, AgentEventData, AgentRunRequest, CoreRuntime, EventSink, InMemoryPluginRegistry,
+    KelvinResult, LifecyclePhase, MemorySearchManager, PluginRegistry, PluginSecurityPolicy,
+    SdkToolRegistry, SessionDescriptor, SessionMessage, SessionStore, ToolPhase,
 };
 use kelvin_memory::MarkdownMemoryManager;
 
@@ -74,28 +74,21 @@ impl SessionStore for InMemorySessionStore {
     }
 }
 
-struct SingleToolRegistry {
-    tool: Arc<dyn Tool>,
-}
+fn sdk_tool_registry_with_wasm_plugin() -> Arc<SdkToolRegistry> {
+    let plugins = InMemoryPluginRegistry::new();
+    let security_policy = PluginSecurityPolicy {
+        allow_fs_write: true,
+        ..Default::default()
+    };
+    plugins
+        .register(
+            Arc::new(WasmSkillPlugin::default()),
+            "0.1.0",
+            &security_policy,
+        )
+        .expect("register wasm skill plugin");
 
-impl SingleToolRegistry {
-    fn new(tool: Arc<dyn Tool>) -> Self {
-        Self { tool }
-    }
-}
-
-impl ToolRegistry for SingleToolRegistry {
-    fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
-        if self.tool.name() == name {
-            Some(self.tool.clone())
-        } else {
-            None
-        }
-    }
-
-    fn names(&self) -> Vec<String> {
-        vec![self.tool.name().to_string()]
-    }
+    Arc::new(SdkToolRegistry::from_plugin_registry(&plugins).expect("build sdk tool registry"))
 }
 
 fn unique_workspace(prefix: &str) -> std::path::PathBuf {
@@ -156,7 +149,7 @@ async fn mvp_secure_skill_run_executes_and_persists_memory() {
         Arc::new(InMemorySessionStore::default()),
         memory_manager.clone(),
         Arc::new(EchoModelProvider::new("echo", "echo-model")),
-        Arc::new(SingleToolRegistry::new(Arc::new(WasmSkillTool::default()))),
+        sdk_tool_registry_with_wasm_plugin(),
         event_sink.clone(),
     );
 
@@ -245,7 +238,7 @@ async fn mvp_secure_skill_run_denies_disallowed_capability() {
         Arc::new(InMemorySessionStore::default()),
         Arc::new(MarkdownMemoryManager::new(&workspace)),
         Arc::new(EchoModelProvider::new("echo", "echo-model")),
-        Arc::new(SingleToolRegistry::new(Arc::new(WasmSkillTool::default()))),
+        sdk_tool_registry_with_wasm_plugin(),
         event_sink.clone(),
     );
     let runtime = CoreRuntime::new(Arc::new(brain));
@@ -280,4 +273,17 @@ async fn mvp_secure_skill_run_denies_disallowed_capability() {
             ..
         })
     ));
+}
+
+#[test]
+fn mvp_sdk_registration_rejects_wasm_plugin_with_default_policy() {
+    let plugins = InMemoryPluginRegistry::new();
+    let err = plugins
+        .register(
+            Arc::new(WasmSkillPlugin::default()),
+            "0.1.0",
+            &PluginSecurityPolicy::default(),
+        )
+        .expect_err("default policy should reject fs write capability");
+    assert!(err.to_string().contains("filesystem write"));
 }

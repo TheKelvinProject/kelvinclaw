@@ -10,7 +10,7 @@ See:
 
 - [OVERVIEW.md](OVERVIEW.md)
 - [docs/architecture.md](docs/architecture.md)
-- [docs/KelvinClaw-gap-analysis.md](docs/KelvinClaw-gap-analysis.md)
+- [docs/kelvin-gap-analysis.md](docs/kelvin-gap-analysis.md)
 - [docs/KELVIN_CORE_SDK.md](docs/KELVIN_CORE_SDK.md)
 - [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md)
 - [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md)
@@ -42,6 +42,14 @@ Main traits:
 - `CoreRuntime` / `RunRegistry` (core lifecycle state machine)
 
 Everything in the runtime is composed with trait objects so concrete implementations can be swapped.
+
+## SDK Dogfooding
+
+The MVP secure skill loop is wired through the Kelvin Core SDK path:
+
+- `WasmSkillPlugin` (plugin manifest + tool factory)
+- `InMemoryPluginRegistry` (policy-gated registration)
+- `SdkToolRegistry` (validated tool projection for runtime wiring)
 
 ## Trusted Executive + Untrusted Skills
 

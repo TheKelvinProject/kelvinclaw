@@ -64,6 +64,12 @@ Source: `crates/kelvin-core/src/sdk.rs`
 - lookup by plugin id
 - manifest inventory
 
+`SdkToolRegistry` provides:
+
+- fail-fast projection from plugin metadata to runtime `ToolRegistry`
+- duplicate-tool-name rejection
+- capability/implementation consistency checks (`tool_provider` capability must match actual tool export)
+
 Source: `crates/kelvin-core/src/sdk.rs`
 
 ## 7. Conformance Tests
@@ -76,6 +82,9 @@ Current SDK tests cover:
 - registry registration/get/list
 - duplicate registration rejection
 - core-version range rejection
+- `SdkToolRegistry` build success for registered tool plugins
+- rejection of missing tool implementation when `tool_provider` is declared
+- rejection of duplicate tool names across plugins
 
 Source: `crates/kelvin-core/src/sdk.rs` (`#[cfg(test)]`)
 

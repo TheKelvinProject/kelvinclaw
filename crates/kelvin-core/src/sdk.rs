@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     EventSink, KelvinError, KelvinResult, MemorySearchManager, ModelProvider, SessionStore, Tool,
+    ToolRegistry,
 };
 
 pub const KELVIN_CORE_SDK_NAME: &str = "Kelvin Core";
@@ -322,17 +323,89 @@ impl PluginRegistry for InMemoryPluginRegistry {
     }
 }
 
+pub struct SdkToolRegistry {
+    tools: HashMap<String, Arc<dyn Tool>>,
+}
+
+impl SdkToolRegistry {
+    pub fn from_plugin_registry(registry: &dyn PluginRegistry) -> KelvinResult<Self> {
+        let mut tools = HashMap::new();
+        let mut manifests = registry.manifests();
+        manifests.sort_by(|left, right| left.id.cmp(&right.id));
+
+        for manifest in manifests {
+            let plugin = registry.get(&manifest.id).ok_or_else(|| {
+                KelvinError::NotFound(format!(
+                    "plugin '{}' disappeared during tool registry build",
+                    manifest.id
+                ))
+            })?;
+
+            let declared_tool_provider = manifest
+                .capabilities
+                .contains(&PluginCapability::ToolProvider);
+            let provided_tool = plugin.tool();
+
+            match (declared_tool_provider, provided_tool) {
+                (false, None) => {}
+                (false, Some(_)) => {
+                    return Err(KelvinError::InvalidInput(format!(
+                        "plugin '{}' exposes a tool but is missing '{}' capability",
+                        manifest.id, "tool_provider"
+                    )));
+                }
+                (true, None) => {
+                    return Err(KelvinError::InvalidInput(format!(
+                        "plugin '{}' declares tool capability but returned no tool",
+                        manifest.id
+                    )));
+                }
+                (true, Some(tool)) => {
+                    let tool_name = tool.name().trim();
+                    if tool_name.is_empty() {
+                        return Err(KelvinError::InvalidInput(format!(
+                            "plugin '{}' returned a tool with empty name",
+                            manifest.id
+                        )));
+                    }
+                    if tools.contains_key(tool_name) {
+                        return Err(KelvinError::InvalidInput(format!(
+                            "duplicate tool name from plugins: {tool_name}"
+                        )));
+                    }
+                    tools.insert(tool_name.to_string(), tool);
+                }
+            }
+        }
+
+        Ok(Self { tools })
+    }
+}
+
+impl ToolRegistry for SdkToolRegistry {
+    fn get(&self, name: &str) -> Option<Arc<dyn Tool>> {
+        self.tools.get(name).cloned()
+    }
+
+    fn names(&self) -> Vec<String> {
+        let mut names = self.tools.keys().cloned().collect::<Vec<_>>();
+        names.sort();
+        names
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use serde_json::json;
 
-    use crate::{KelvinResult, Tool, ToolCallInput, ToolCallResult};
+    use crate::{KelvinResult, Tool, ToolCallInput, ToolCallResult, ToolRegistry};
 
     use super::{
         check_plugin_compatibility, InMemoryPluginRegistry, PluginCapability, PluginFactory,
-        PluginManifest, PluginRegistry, PluginSecurityPolicy, KELVIN_CORE_API_VERSION,
+        PluginManifest, PluginRegistry, PluginSecurityPolicy, SdkToolRegistry,
+        KELVIN_CORE_API_VERSION,
     };
 
     fn test_manifest() -> PluginManifest {
@@ -373,6 +446,30 @@ mod tests {
     }
 
     impl PluginFactory for EchoPlugin {
+        fn manifest(&self) -> &PluginManifest {
+            &self.manifest
+        }
+
+        fn tool(&self) -> Option<Arc<dyn Tool>> {
+            Some(Arc::new(EchoTool))
+        }
+    }
+
+    struct EmptyToolPlugin {
+        manifest: PluginManifest,
+    }
+
+    impl PluginFactory for EmptyToolPlugin {
+        fn manifest(&self) -> &PluginManifest {
+            &self.manifest
+        }
+    }
+
+    struct ConflictingToolPlugin {
+        manifest: PluginManifest,
+    }
+
+    impl PluginFactory for ConflictingToolPlugin {
         fn manifest(&self) -> &PluginManifest {
             &self.manifest
         }
@@ -459,5 +556,65 @@ mod tests {
             .register(plugin, "0.1.0", &PluginSecurityPolicy::default())
             .expect_err("range check");
         assert!(err.to_string().contains("lower than required minimum"));
+    }
+
+    #[test]
+    fn sdk_tool_registry_builds_from_registered_plugins() {
+        let registry = InMemoryPluginRegistry::new();
+        let plugin = Arc::new(EchoPlugin {
+            manifest: test_manifest(),
+        });
+        registry
+            .register(plugin, "0.1.0", &PluginSecurityPolicy::default())
+            .expect("register");
+
+        let tools = SdkToolRegistry::from_plugin_registry(&registry).expect("tool registry");
+        assert_eq!(tools.names(), vec!["echo".to_string()]);
+        assert!(tools.get("echo").is_some());
+    }
+
+    #[test]
+    fn sdk_tool_registry_rejects_missing_tool_implementation() {
+        let registry = InMemoryPluginRegistry::new();
+        let manifest = test_manifest();
+        let plugin = Arc::new(EmptyToolPlugin { manifest });
+        registry
+            .register(plugin, "0.1.0", &PluginSecurityPolicy::default())
+            .expect("register");
+
+        let err = match SdkToolRegistry::from_plugin_registry(&registry) {
+            Ok(_) => panic!("missing tool should fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("returned no tool"));
+    }
+
+    #[test]
+    fn sdk_tool_registry_rejects_duplicate_tool_names() {
+        let registry = InMemoryPluginRegistry::new();
+        let first = Arc::new(EchoPlugin {
+            manifest: PluginManifest {
+                id: "acme.echo.first".to_string(),
+                ..test_manifest()
+            },
+        });
+        let second = Arc::new(ConflictingToolPlugin {
+            manifest: PluginManifest {
+                id: "acme.echo.second".to_string(),
+                ..test_manifest()
+            },
+        });
+        registry
+            .register(first, "0.1.0", &PluginSecurityPolicy::default())
+            .expect("register first");
+        registry
+            .register(second, "0.1.0", &PluginSecurityPolicy::default())
+            .expect("register second");
+
+        let err = match SdkToolRegistry::from_plugin_registry(&registry) {
+            Ok(_) => panic!("duplicate tools should fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("duplicate tool name"));
     }
 }

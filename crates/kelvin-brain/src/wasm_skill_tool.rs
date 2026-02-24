@@ -6,10 +6,15 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use serde_json::{json, Value};
 
-use kelvin_core::{KelvinError, KelvinResult, Tool, ToolCallInput, ToolCallResult};
+use kelvin_core::{
+    KelvinError, KelvinResult, PluginCapability, PluginFactory, PluginManifest, Tool,
+    ToolCallInput, ToolCallResult, KELVIN_CORE_API_VERSION,
+};
 use kelvin_wasm::{ClawCall, SandboxPolicy, SandboxPreset, WasmSkillHost};
 
 const DEFAULT_MEMORY_APPEND_PATH: &str = "memory/skill-events.md";
+pub const WASM_SKILL_PLUGIN_ID: &str = "kelvin.wasm_skill";
+pub const WASM_SKILL_PLUGIN_NAME: &str = "Kelvin WASM Skill Tool";
 
 #[derive(Clone)]
 pub struct WasmSkillTool {
@@ -198,6 +203,59 @@ impl Default for WasmSkillTool {
             Arc::new(WasmSkillHost::new()),
             SandboxPolicy::locked_down(),
         )
+    }
+}
+
+#[derive(Clone)]
+pub struct WasmSkillPlugin {
+    manifest: PluginManifest,
+    tool: Arc<WasmSkillTool>,
+}
+
+impl WasmSkillPlugin {
+    pub fn new(tool: Arc<WasmSkillTool>) -> Self {
+        Self {
+            manifest: Self::default_manifest(),
+            tool,
+        }
+    }
+
+    pub fn default_manifest() -> PluginManifest {
+        PluginManifest {
+            id: WASM_SKILL_PLUGIN_ID.to_string(),
+            name: WASM_SKILL_PLUGIN_NAME.to_string(),
+            version: "0.1.0".to_string(),
+            api_version: KELVIN_CORE_API_VERSION.to_string(),
+            description: Some(
+                "Sandboxed WebAssembly skill execution with workspace-scoped memory append."
+                    .to_string(),
+            ),
+            homepage: None,
+            capabilities: vec![
+                PluginCapability::ToolProvider,
+                PluginCapability::FsRead,
+                PluginCapability::FsWrite,
+            ],
+            experimental: false,
+            min_core_version: Some("0.1.0".to_string()),
+            max_core_version: None,
+        }
+    }
+}
+
+impl Default for WasmSkillPlugin {
+    fn default() -> Self {
+        Self::new(Arc::new(WasmSkillTool::default()))
+    }
+}
+
+impl PluginFactory for WasmSkillPlugin {
+    fn manifest(&self) -> &PluginManifest {
+        &self.manifest
+    }
+
+    fn tool(&self) -> Option<Arc<dyn Tool>> {
+        Some(self.tool.clone())
     }
 }
 
