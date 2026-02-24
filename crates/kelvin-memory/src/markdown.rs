@@ -226,7 +226,6 @@ impl MemorySearchManager for MarkdownMemoryManager {
 
         let target = self.workspace_dir.join(&rel);
         if !target.is_file() {
-            // Mirrors OpenClaw's graceful ENOENT behavior for memory_get.
             return Ok(MemoryReadResult {
                 text: String::new(),
                 path: rel,

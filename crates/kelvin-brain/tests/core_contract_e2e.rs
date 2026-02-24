@@ -6,7 +6,7 @@ use async_trait::async_trait;
 use serde_json::{json, Value};
 use tokio::sync::{Mutex, RwLock};
 
-use kelvin_brain::OpenClawBrain;
+use kelvin_brain::KelvinBrain;
 use kelvin_core::{
     AgentEvent, AgentEventData, AgentRunRequest, Brain, EventSink, KelvinError, KelvinResult,
     LifecyclePhase, MemoryEmbeddingProbeResult, MemoryProviderStatus, MemoryReadParams,
@@ -253,7 +253,7 @@ async fn e2e_events_are_complete_and_ordered_and_tool_execution_is_deterministic
         },
     });
 
-    let brain = OpenClawBrain::new(
+    let brain = KelvinBrain::new(
         session_store.clone(),
         Arc::new(StaticMemory),
         model,
@@ -346,7 +346,7 @@ async fn e2e_events_are_complete_and_ordered_and_tool_execution_is_deterministic
 #[tokio::test]
 async fn e2e_timeout_produces_typed_error_and_lifecycle_error_event() {
     let event_sink = Arc::new(RecordingEventSink::default());
-    let brain = OpenClawBrain::new(
+    let brain = KelvinBrain::new(
         Arc::new(InMemorySessionStore::default()),
         Arc::new(StaticMemory),
         Arc::new(StubModelProvider {
@@ -388,7 +388,7 @@ async fn e2e_timeout_produces_typed_error_and_lifecycle_error_event() {
 #[tokio::test]
 async fn e2e_invalid_prompt_returns_typed_input_error() {
     let event_sink = Arc::new(RecordingEventSink::default());
-    let brain = OpenClawBrain::new(
+    let brain = KelvinBrain::new(
         Arc::new(InMemorySessionStore::default()),
         Arc::new(StaticMemory),
         Arc::new(StubModelProvider {

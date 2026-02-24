@@ -1,14 +1,14 @@
-# OpenClaw Gap Analysis -> KelvinClaw Refactor
+# KelvinClaw Gap Analysis -> KelvinClaw Refactor
 
 ## Objective
 
-Refactor KelvinClaw into an interface-first Rust architecture that mirrors OpenClaw's runtime "brain" structure and backend abstraction points.
+Refactor KelvinClaw into an interface-first Rust architecture that mirrors KelvinClaw's runtime "brain" structure and backend abstraction points.
 
-## Canonical OpenClaw Behaviors Mapped
+## Canonical KelvinClaw Behaviors Mapped
 
 ### 1. Agent Loop and Stream Events
 
-OpenClaw signals:
+KelvinClaw signals:
 
 - serialized runs per session lane
 - lifecycle start/end/error stream
@@ -17,14 +17,14 @@ OpenClaw signals:
 
 KelvinClaw mapping:
 
-- `kelvin-brain::OpenClawBrain`
+- `kelvin-brain::KelvinBrain`
 - `kelvin-core::AgentEventData`
 - `archive/kelvin-runtime::LaneScheduler` (archived reference implementation)
 - `archive/kelvin-runtime::AgentRuntime` (archived reference implementation)
 
 ### 2. Memory Manager Contract
 
-OpenClaw signals:
+KelvinClaw signals:
 
 - `search`, `readFile`, `status`, `sync`, probe methods
 - swappable backend (builtin vs qmd)
@@ -40,7 +40,7 @@ KelvinClaw mapping:
 
 ### 3. Run Registry and Wait Semantics
 
-OpenClaw signals:
+KelvinClaw signals:
 
 - immediate `accepted` response
 - async run completion
@@ -87,7 +87,7 @@ Implemented in `kelvin-core`:
 - wait timeout behavior
 - completed outcome retrieval
 
-## Remaining Work for Full OpenClaw Parity
+## Remaining Work for Full KelvinClaw Parity
 
 - gateway WS protocol and frame validation
 - model-specific auth/failover logic

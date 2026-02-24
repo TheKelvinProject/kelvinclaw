@@ -16,7 +16,7 @@ use kelvin_core::{
 };
 
 #[derive(Clone)]
-pub struct OpenClawBrain {
+pub struct KelvinBrain {
     session_store: Arc<dyn SessionStore>,
     memory: Arc<dyn MemorySearchManager>,
     model: Arc<dyn ModelProvider>,
@@ -25,7 +25,7 @@ pub struct OpenClawBrain {
     seq: Arc<AtomicU64>,
 }
 
-impl OpenClawBrain {
+impl KelvinBrain {
     pub fn new(
         session_store: Arc<dyn SessionStore>,
         memory: Arc<dyn MemorySearchManager>,
@@ -147,7 +147,7 @@ impl OpenClawBrain {
             system_prompt: req
                 .extra_system_prompt
                 .clone()
-                .unwrap_or_else(|| "OpenClaw-style Kelvin brain".to_string()),
+                .unwrap_or_else(|| "KelvinClaw-style Kelvin brain".to_string()),
             user_prompt: req.prompt.clone(),
             memory_snippets,
             history,
@@ -264,7 +264,7 @@ impl OpenClawBrain {
 }
 
 #[async_trait]
-impl Brain for OpenClawBrain {
+impl Brain for KelvinBrain {
     async fn run(&self, req: AgentRunRequest) -> KelvinResult<AgentRunResult> {
         let run_id = req.run_id.clone();
         let result = match req.timeout_ms {
