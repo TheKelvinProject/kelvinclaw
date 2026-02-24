@@ -673,8 +673,11 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "kelvin-core",
+ "kelvin-memory",
+ "kelvin-wasm",
  "serde_json",
  "tokio",
+ "wat",
 ]
 
 [[package]]
