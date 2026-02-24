@@ -1,0 +1,23 @@
+[workspace]
+members = [
+  "crates/kelvin-core",
+  "crates/kelvin-memory",
+  "crates/kelvin-brain",
+  "crates/kelvin-runtime",
+  "crates/kelvin-cli",
+]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["KelvinClaw Contributors"]
+
+[workspace.dependencies]
+async-trait = "0.1"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+thiserror = "1"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
+walkdir = "2"

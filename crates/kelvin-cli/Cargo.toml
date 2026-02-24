@@ -1,0 +1,13 @@
+[package]
+name = "kelvin-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[dependencies]
+tokio.workspace = true
+kelvin-core = { path = "../kelvin-core" }
+kelvin-memory = { path = "../kelvin-memory" }
+kelvin-brain = { path = "../kelvin-brain" }
+kelvin-runtime = { path = "../kelvin-runtime" }
