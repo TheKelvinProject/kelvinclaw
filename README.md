@@ -13,6 +13,7 @@ See:
 - [docs/kelvin-gap-analysis.md](docs/kelvin-gap-analysis.md)
 - [docs/KELVIN_CORE_SDK.md](docs/KELVIN_CORE_SDK.md)
 - [docs/SDK_TEST_MATRIX.md](docs/SDK_TEST_MATRIX.md)
+- [docs/ROOT_VS_SDK.md](docs/ROOT_VS_SDK.md)
 - [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md)
 - [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md)
 - [docs/trusted-executive-wasm.md](docs/trusted-executive-wasm.md)
@@ -117,6 +118,12 @@ scripts/remote-test.sh --host ec2-user@your-host --cargo-args '-- --nocapture'
 
 ```bash
 cargo test --workspace
+```
+
+SDK certification lane:
+
+```bash
+scripts/test-sdk.sh
 ```
 
 Docker:
