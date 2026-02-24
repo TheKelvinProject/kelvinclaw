@@ -12,6 +12,7 @@ See:
 - [docs/architecture.md](docs/architecture.md)
 - [docs/kelvin-gap-analysis.md](docs/kelvin-gap-analysis.md)
 - [docs/KELVIN_CORE_SDK.md](docs/KELVIN_CORE_SDK.md)
+- [docs/SDK_TEST_MATRIX.md](docs/SDK_TEST_MATRIX.md)
 - [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md)
 - [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md)
 - [docs/trusted-executive-wasm.md](docs/trusted-executive-wasm.md)

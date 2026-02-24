@@ -96,3 +96,7 @@ SDK operation is governed by:
 - `docs/SDK_PRINCIPLES.md`
 
 This keeps Kelvin small and stable while making plugin development predictable and safe.
+
+Detailed security/stability test coverage matrix:
+
+- `docs/SDK_TEST_MATRIX.md`
