@@ -29,6 +29,15 @@ A literal `OVERVIEW.md` was not present in the cloned `openclaw` repository. Thi
 - `archive/kelvin-runtime`: archived lane scheduler, run registry, adapters.
 - `archive/kelvin-cli`: archived runnable composition layer (excluded from workspace members).
 
+## Minimal Core Governance
+
+KelvinClaw now formalizes "small core, extensible ecosystem" rules:
+
+- [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md): strict criteria for what can enter `kelvin-core`.
+- [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md): plugin/SDK expectations for stability, safety, and security.
+
+These documents are intended to keep core tiny while making extension surfaces predictable.
+
 ## Primary Interfaces (Plug-and-Play Boundaries)
 
 From `kelvin-core`:

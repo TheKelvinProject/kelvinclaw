@@ -19,8 +19,8 @@ KelvinClaw mapping:
 
 - `kelvin-brain::OpenClawBrain`
 - `kelvin-core::AgentEventData`
-- `kelvin-runtime::LaneScheduler`
-- `kelvin-runtime::AgentRuntime`
+- `archive/kelvin-runtime::LaneScheduler` (archived reference implementation)
+- `archive/kelvin-runtime::AgentRuntime` (archived reference implementation)
 
 ### 2. Memory Manager Contract
 
@@ -48,10 +48,10 @@ OpenClaw signals:
 
 KelvinClaw mapping:
 
-- `kelvin-runtime::RunRegistry`
-- `kelvin-runtime::AgentRuntime::submit`
-- `kelvin-runtime::AgentRuntime::wait`
-- `kelvin-runtime::AgentRuntime::wait_for_outcome`
+- `archive/kelvin-runtime::RunRegistry` (archived reference implementation)
+- `archive/kelvin-runtime::AgentRuntime::submit`
+- `archive/kelvin-runtime::AgentRuntime::wait`
+- `archive/kelvin-runtime::AgentRuntime::wait_for_outcome`
 
 ## Interface Inventory
 
@@ -77,7 +77,7 @@ Implemented in `kelvin-core`:
 
 ## Tests Added
 
-`kelvin-runtime/src/agent_runtime.rs`:
+`archive/kelvin-runtime/src/agent_runtime.rs`:
 
 - serializes runs in same session lane
 - wait timeout behavior
