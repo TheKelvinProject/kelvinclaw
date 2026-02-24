@@ -14,7 +14,7 @@ This matrix keeps Kelvin Core SDK verification focused on security, stability, a
 - `admission control`
   - semver validation
   - API major compatibility
-  - privileged capability policy gates (`network_egress`, `fs_write`, `command_execution`)
+  - privileged capability policy gates (`fs_read`, `fs_write`, `network_egress`, `command_execution`)
   - experimental plugin gating
 - `projection safety`
   - plugin capability declaration must match implementation
@@ -32,3 +32,5 @@ This matrix keeps Kelvin Core SDK verification focused on security, stability, a
 
 - `crates/kelvin-core/src/sdk.rs` unit tests
 - `crates/kelvin-core/tests/sdk_security_stability.rs` integration tests
+- `crates/kelvin-core/tests/sdk_owasp_top10_ai_2025.rs` OWASP Top 10 AI stress suite
+- `docs/SDK_OWASP_TOP10_AI_2025.md` category-to-test mapping

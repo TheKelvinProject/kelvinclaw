@@ -77,6 +77,7 @@ impl SessionStore for InMemorySessionStore {
 fn sdk_tool_registry_with_wasm_plugin() -> Arc<SdkToolRegistry> {
     let plugins = InMemoryPluginRegistry::new();
     let security_policy = PluginSecurityPolicy {
+        allow_fs_read: true,
         allow_fs_write: true,
         ..Default::default()
     };

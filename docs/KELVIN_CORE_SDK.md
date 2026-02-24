@@ -37,7 +37,7 @@ Source: `crates/kelvin-core/src/sdk.rs`
 `PluginCapability` captures required powers:
 
 - interface capabilities (model/memory/tool/session/event)
-- privileged capabilities (`network_egress`, `fs_write`, `command_execution`)
+- privileged capabilities (`fs_read`, `fs_write`, `network_egress`, `command_execution`)
 
 `PluginSecurityPolicy` controls what is allowed at registration time.
 
@@ -100,6 +100,7 @@ This keeps Kelvin small and stable while making plugin development predictable a
 Detailed security/stability test coverage matrix:
 
 - `docs/SDK_TEST_MATRIX.md`
+- `docs/SDK_OWASP_TOP10_AI_2025.md`
 - `docs/ROOT_VS_SDK.md`
 
 SDK certification command:

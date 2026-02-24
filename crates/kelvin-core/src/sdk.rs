@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 
 use semver::Version;
@@ -11,6 +11,11 @@ use crate::{
 
 pub const KELVIN_CORE_SDK_NAME: &str = "Kelvin Core";
 pub const KELVIN_CORE_API_VERSION: &str = "1.0.0";
+pub const MAX_PLUGIN_ID_LEN: usize = 128;
+pub const MAX_PLUGIN_NAME_LEN: usize = 128;
+pub const MAX_PLUGIN_DESCRIPTION_LEN: usize = 4_096;
+pub const MAX_PLUGIN_HOMEPAGE_LEN: usize = 2_048;
+pub const MAX_PLUGIN_CAPABILITIES: usize = 32;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq, Hash)]
 #[serde(rename_all = "snake_case")]
@@ -43,8 +48,16 @@ pub struct PluginManifest {
 impl PluginManifest {
     pub fn validate(&self) -> KelvinResult<()> {
         validate_plugin_id(&self.id)?;
+        validate_plugin_name(&self.name)?;
         validate_semver("plugin version", &self.version)?;
         validate_semver("api version", &self.api_version)?;
+        validate_optional_text_field(
+            "plugin description",
+            self.description.as_deref(),
+            MAX_PLUGIN_DESCRIPTION_LEN,
+        )?;
+        validate_homepage(self.homepage.as_deref())?;
+        validate_capabilities(&self.capabilities)?;
 
         if let Some(min) = &self.min_core_version {
             validate_semver("min core version", min)?;
@@ -58,9 +71,15 @@ impl PluginManifest {
 }
 
 fn validate_semver(label: &str, value: &str) -> KelvinResult<()> {
+    if value.trim().is_empty() {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not be empty"
+        )));
+    }
     Version::parse(value).map_err(|err| {
+        let shown = preview(value, 64);
         KelvinError::InvalidInput(format!(
-            "{label} must be valid semver, got '{value}': {err}"
+            "{label} must be valid semver, got '{shown}': {err}"
         ))
     })?;
     Ok(())
@@ -73,20 +92,140 @@ fn validate_plugin_id(value: &str) -> KelvinResult<()> {
             "plugin id must not be empty".to_string(),
         ));
     }
+    if cleaned.chars().count() > MAX_PLUGIN_ID_LEN {
+        return Err(KelvinError::InvalidInput(format!(
+            "plugin id exceeds max length {MAX_PLUGIN_ID_LEN}"
+        )));
+    }
+    if cleaned.chars().any(|ch| ch.is_control()) {
+        return Err(KelvinError::InvalidInput(
+            "plugin id must not include control characters".to_string(),
+        ));
+    }
     if !cleaned
         .chars()
         .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
     {
+        let shown = preview(cleaned, 64);
         return Err(KelvinError::InvalidInput(format!(
-            "plugin id has invalid characters: {cleaned}"
+            "plugin id has invalid characters: {shown}"
         )));
     }
     Ok(())
 }
 
+fn validate_plugin_name(value: &str) -> KelvinResult<()> {
+    let cleaned = value.trim();
+    if cleaned.is_empty() {
+        return Err(KelvinError::InvalidInput(
+            "plugin name must not be empty".to_string(),
+        ));
+    }
+    if cleaned.chars().count() > MAX_PLUGIN_NAME_LEN {
+        return Err(KelvinError::InvalidInput(format!(
+            "plugin name exceeds max length {MAX_PLUGIN_NAME_LEN}"
+        )));
+    }
+    if cleaned.chars().any(|ch| ch.is_control()) {
+        return Err(KelvinError::InvalidInput(
+            "plugin name must not include control characters".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_optional_text_field(
+    label: &str,
+    value: Option<&str>,
+    max_len: usize,
+) -> KelvinResult<()> {
+    let Some(raw) = value else {
+        return Ok(());
+    };
+    let cleaned = raw.trim();
+    if cleaned.is_empty() {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not be empty"
+        )));
+    }
+    if cleaned.chars().count() > max_len {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} exceeds max length {max_len}"
+        )));
+    }
+    if cleaned.chars().any(|ch| ch.is_control()) {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not include control characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_homepage(value: Option<&str>) -> KelvinResult<()> {
+    let Some(raw) = value else {
+        return Ok(());
+    };
+    let cleaned = raw.trim();
+    if cleaned.is_empty() {
+        return Err(KelvinError::InvalidInput(
+            "plugin homepage must not be empty".to_string(),
+        ));
+    }
+    if cleaned.chars().count() > MAX_PLUGIN_HOMEPAGE_LEN {
+        return Err(KelvinError::InvalidInput(format!(
+            "plugin homepage exceeds max length {MAX_PLUGIN_HOMEPAGE_LEN}"
+        )));
+    }
+    if cleaned
+        .chars()
+        .any(|ch| ch.is_control() || ch.is_whitespace())
+    {
+        return Err(KelvinError::InvalidInput(
+            "plugin homepage must not include whitespace/control characters".to_string(),
+        ));
+    }
+    if !(cleaned.starts_with("https://") || cleaned.starts_with("http://")) {
+        return Err(KelvinError::InvalidInput(
+            "plugin homepage must use http:// or https://".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_capabilities(capabilities: &[PluginCapability]) -> KelvinResult<()> {
+    if capabilities.len() > MAX_PLUGIN_CAPABILITIES {
+        return Err(KelvinError::InvalidInput(format!(
+            "plugin capabilities exceed max length {MAX_PLUGIN_CAPABILITIES}"
+        )));
+    }
+
+    let mut seen = HashSet::new();
+    for capability in capabilities {
+        if !seen.insert(*capability) {
+            return Err(KelvinError::InvalidInput(format!(
+                "plugin capabilities contain duplicate value: {capability:?}"
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn preview(value: &str, max_chars: usize) -> String {
+    let mut shown = String::new();
+    for (idx, ch) in value.chars().enumerate() {
+        if idx >= max_chars {
+            shown.push_str("...");
+            return shown;
+        }
+        shown.push(ch);
+    }
+    shown
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 pub struct PluginSecurityPolicy {
     pub allow_experimental: bool,
+    pub allow_fs_read: bool,
     pub allow_network_egress: bool,
     pub allow_fs_write: bool,
     pub allow_command_execution: bool,
@@ -96,6 +235,7 @@ impl Default for PluginSecurityPolicy {
     fn default() -> Self {
         Self {
             allow_experimental: false,
+            allow_fs_read: false,
             allow_network_egress: false,
             allow_fs_write: false,
             allow_command_execution: false,
@@ -175,6 +315,13 @@ pub fn check_plugin_compatibility(
     if manifest.experimental && !security_policy.allow_experimental {
         reasons.push(format!(
             "plugin '{}' is experimental and policy disallows experimental plugins",
+            manifest.id
+        ));
+    }
+
+    if manifest.capabilities.contains(&PluginCapability::FsRead) && !security_policy.allow_fs_read {
+        reasons.push(format!(
+            "plugin '{}' requires filesystem read but policy disallows it",
             manifest.id
         ));
     }
