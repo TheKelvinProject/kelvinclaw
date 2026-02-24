@@ -100,3 +100,10 @@ This keeps Kelvin small and stable while making plugin development predictable a
 Detailed security/stability test coverage matrix:
 
 - `docs/SDK_TEST_MATRIX.md`
+- `docs/ROOT_VS_SDK.md`
+
+SDK certification command:
+
+```bash
+scripts/test-sdk.sh
+```
