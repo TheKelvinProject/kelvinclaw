@@ -64,6 +64,7 @@ The MVP secure skill loop is wired through the Kelvin Core SDK path:
 - `WasmSkillPlugin` (plugin manifest + tool factory)
 - `InMemoryPluginRegistry` (policy-gated registration)
 - `SdkToolRegistry` (validated tool projection for runtime wiring)
+- `kelvin_cli` (WASM-backed CLI plugin executed before each run)
 
 ## Trusted Executive + Untrusted Skills
 
@@ -100,8 +101,12 @@ The fallback manager mimics KelvinClaw's primary->fallback behavior.
 ## CLI Example
 
 ```bash
-cargo run --manifest-path archive/kelvin-cli/Cargo.toml -- --prompt "hello" --workspace /path/to/workspace --memory fallback
+CARGO_TARGET_DIR=target/try-kelvin-cli cargo run --manifest-path archive/kelvin-cli/Cargo.toml -- --prompt "hello" --workspace /path/to/workspace --memory fallback
 ```
+
+The CLI executable is only a thin launcher. Runtime behavior is composed in `kelvin-sdk`, and
+the CLI lane is dogfooded through a WASM plugin (`kelvin_cli`) registered via the SDK plugin
+registry.
 
 Fastest dev try path:
 
@@ -211,7 +216,8 @@ Trust policy template:
 
 Archived CLI boot behavior:
 
-- `archive/kelvin-cli` now auto-loads installed SDK plugins with `load_installed_tool_plugins_default(...)` and keeps built-in tools as fallback.
+- `archive/kelvin-cli` calls `kelvin_sdk::run_with_sdk(...)` only.
+- `kelvin-sdk` registers/executes the `kelvin_cli` WASM plugin and auto-loads installed SDK plugins with `load_installed_tool_plugins_default(...)`.
 
 ## Local Test
 

@@ -5,11 +5,12 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 PROMPT="${1:-hello kelvin}"
 TIMEOUT_MS="${KELVIN_TRY_TIMEOUT_MS:-5000}"
 MODE="${KELVIN_TRY_MODE:-auto}" # auto | local | docker
+TARGET_DIR="${KELVIN_TRY_TARGET_DIR:-${ROOT_DIR}/target/try-kelvin-cli}"
 
 run_local() {
   echo "[try-kelvin] mode=local"
   cd "${ROOT_DIR}"
-  cargo run --manifest-path archive/kelvin-cli/Cargo.toml -- \
+  CARGO_TARGET_DIR="${TARGET_DIR}" cargo run --manifest-path archive/kelvin-cli/Cargo.toml -- \
     --prompt "${PROMPT}" \
     --timeout-ms "${TIMEOUT_MS}"
 }
@@ -19,10 +20,11 @@ run_docker() {
   docker run --rm \
     -e KELVIN_TRY_PROMPT="${PROMPT}" \
     -e KELVIN_TRY_TIMEOUT_MS="${TIMEOUT_MS}" \
+    -e KELVIN_TRY_TARGET_DIR="/work/target/try-kelvin-cli" \
     -v "${ROOT_DIR}:/work" \
     -w /work \
     rust:latest \
-    bash -lc 'export PATH=/usr/local/cargo/bin:$PATH && cargo run --manifest-path archive/kelvin-cli/Cargo.toml -- --prompt "$KELVIN_TRY_PROMPT" --timeout-ms "$KELVIN_TRY_TIMEOUT_MS"'
+    bash -lc 'export PATH=/usr/local/cargo/bin:$PATH && CARGO_TARGET_DIR="$KELVIN_TRY_TARGET_DIR" cargo run --manifest-path archive/kelvin-cli/Cargo.toml -- --prompt "$KELVIN_TRY_PROMPT" --timeout-ms "$KELVIN_TRY_TIMEOUT_MS"'
 }
 
 if [[ "${MODE}" == "local" ]]; then

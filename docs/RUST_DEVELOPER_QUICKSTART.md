@@ -16,6 +16,7 @@ What this does:
 
 Expected output includes:
 
+- cli plugin preflight (`kelvin_cli plugin executed ...`)
 - run accepted
 - lifecycle events (`start` / `end`)
 - assistant payload (echo provider for MVP)
@@ -51,6 +52,7 @@ cargo test -p kelvin-memory-controller --test memory_controller_nist_ai_rmf_1_0
 ## 4) Current MVP behavior
 
 - The default demo path uses the built-in echo model provider.
+- CLI flow is SDK-first and runs through a WASM plugin (`kelvin_cli`) before run execution.
 - Memory/data-plane split exists and is tested.
 - Plugin install path is prebuilt-package based (no recompiling root required).
 
