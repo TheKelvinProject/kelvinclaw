@@ -1,6 +1,7 @@
 # Rust Developer Quickstart
 
 This is the fastest path to try KelvinClaw from a fresh clone.
+For beginner and WASM-author paths, see [docs/GETTING_STARTED.md](GETTING_STARTED.md).
 
 ## 1) Run Kelvin in one command
 
@@ -36,6 +37,12 @@ KELVIN_TRY_TIMEOUT_MS=8000 scripts/try-kelvin.sh "longer timeout"
 ```
 
 ## 3) Validate security/stability suites
+
+Track verification command:
+
+```bash
+scripts/verify-onboarding.sh --track rust
+```
 
 SDK suites:
 
