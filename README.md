@@ -14,6 +14,20 @@ What this project includes:
 
 For end users, plugins are installed as packages and executed by Kelvin. They do not need to compile the Rust workspace.
 
+## Getting Started
+
+Choose the onboarding path for your experience level:
+
+- [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)
+
+Verify a specific path:
+
+```bash
+scripts/verify-onboarding.sh --track beginner
+scripts/verify-onboarding.sh --track rust
+scripts/verify-onboarding.sh --track wasm
+```
+
 ## Repository Layout
 
 - `apps/kelvin-host`: thin trusted host executable
@@ -27,6 +41,7 @@ See:
 
 - [OVERVIEW.md](OVERVIEW.md)
 - [docs/architecture.md](docs/architecture.md)
+- [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)
 - [docs/kelvin-gap-analysis.md](docs/kelvin-gap-analysis.md)
 - [docs/KELVIN_CORE_SDK.md](docs/KELVIN_CORE_SDK.md)
 - [docs/SDK_TEST_MATRIX.md](docs/SDK_TEST_MATRIX.md)
@@ -127,10 +142,10 @@ The CLI executable is only a thin launcher. Runtime behavior is composed in `kel
 the CLI path executes through an installed plugin (`kelvin_cli`) loaded through the
 same secure installed-plugin path as third-party plugins.
 
-Fastest dev try path:
+Quick run:
 
 ```bash
-scripts/try-kelvin.sh "hello kelvin"
+scripts/try-kelvin.sh "hello"
 ```
 
 Tool-trigger pattern for the default model provider:

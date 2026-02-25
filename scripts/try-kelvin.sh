@@ -18,6 +18,27 @@ ensure_cli_plugin() {
       --trust-policy-path "${TRUST_POLICY_PATH}"
 }
 
+ensure_cli_plugin_docker() {
+  echo "[try-kelvin] ensuring kelvin_cli plugin is installed (docker bootstrap)"
+  docker run --rm \
+    -e DEBIAN_FRONTEND=noninteractive \
+    -e KELVIN_PLUGIN_HOME="/work/.kelvin/plugins" \
+    -e KELVIN_TRUST_POLICY_PATH="/work/.kelvin/trusted_publishers.json" \
+    -v "${ROOT_DIR}:/work" \
+    -w /work \
+    rust:latest \
+    bash -lc '
+      set -euo pipefail
+      if ! command -v jq >/dev/null 2>&1; then
+        apt-get update -qq >/dev/null
+        apt-get install -y --no-install-recommends jq >/dev/null
+      fi
+      scripts/install-kelvin-cli-plugin.sh \
+        --plugin-home "$KELVIN_PLUGIN_HOME" \
+        --trust-policy-path "$KELVIN_TRUST_POLICY_PATH"
+    '
+}
+
 run_local() {
   echo "[try-kelvin] mode=local"
   ensure_cli_plugin
@@ -32,7 +53,7 @@ run_local() {
 
 run_docker() {
   echo "[try-kelvin] mode=docker"
-  ensure_cli_plugin
+  ensure_cli_plugin_docker
   docker run --rm \
     -e KELVIN_TRY_PROMPT="${PROMPT}" \
     -e KELVIN_TRY_TIMEOUT_MS="${TIMEOUT_MS}" \
