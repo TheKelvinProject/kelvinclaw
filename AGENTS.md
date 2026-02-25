@@ -49,7 +49,7 @@ This file defines default expectations for coding agents working in this reposit
 ## Build and Test
 
 - Only run tests/builds relevant to the change being made, but ensure all tests pass before finalizing.
-- Prefer Docker-based verification, remote first if available, then local.
+- Prefer Docker-based verification, remote server first if available, only fallback to local if needed.
 - Standard SDK lane:
     - `scripts/test-sdk.sh`
 - Targeted Rust lane:
