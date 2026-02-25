@@ -15,6 +15,7 @@ See:
 - [docs/SDK_TEST_MATRIX.md](docs/SDK_TEST_MATRIX.md)
 - [docs/SDK_OWASP_TOP10_AI_2025.md](docs/SDK_OWASP_TOP10_AI_2025.md)
 - [docs/SDK_NIST_AI_RMF_1_0.md](docs/SDK_NIST_AI_RMF_1_0.md)
+- [docs/PLUGIN_INSTALL_FLOW.md](docs/PLUGIN_INSTALL_FLOW.md)
 - [docs/ROOT_VS_SDK.md](docs/ROOT_VS_SDK.md)
 - [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md)
 - [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md)
@@ -126,6 +127,34 @@ Notes:
 - `.env` and `.env.local` are gitignored; keep personal hosts/IPs there only.
 - `scripts/remote-test.sh` reads only `REMOTE_TEST_HOST` and `REMOTE_TEST_REMOTE_DIR` from `.env`/`.env.local`.
 - `.env` files are parsed as key/value data and are not executed as shell code.
+
+## Plugin Install (No Build Required)
+
+Install a prebuilt plugin package:
+
+```bash
+scripts/plugin-install.sh --package ./dist/acme.echo-1.0.0.tar.gz
+```
+
+List installed plugins:
+
+```bash
+scripts/plugin-list.sh
+scripts/plugin-list.sh --json
+```
+
+Uninstall plugin:
+
+```bash
+scripts/plugin-uninstall.sh --id acme.echo --version 1.0.0
+scripts/plugin-uninstall.sh --id acme.echo --purge
+```
+
+Run installer tests:
+
+```bash
+scripts/test-plugin-install.sh
+```
 
 ## Local Test
 
