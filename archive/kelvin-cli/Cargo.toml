@@ -7,15 +7,11 @@ authors = ["KelvinClaw Contributors"]
 
 [dependencies]
 tokio = { version = "1", features = ["rt-multi-thread", "macros", "sync", "time"] }
-kelvin-core = { path = "../../crates/kelvin-core" }
-kelvin-memory = { path = "../../crates/kelvin-memory" }
-kelvin-memory-client = { path = "../../crates/kelvin-memory-client", optional = true }
-kelvin-brain = { path = "../../crates/kelvin-brain" }
-kelvin-runtime = { path = "../kelvin-runtime" }
+kelvin-sdk = { path = "../../crates/kelvin-sdk", default-features = false }
 
 [features]
 default = []
-memory_rpc = ["kelvin-memory-client"]
-memory_legacy_fallback = []
+memory_rpc = ["kelvin-sdk/memory_rpc"]
+memory_legacy_fallback = ["kelvin-sdk/memory_legacy_fallback"]
 
 [workspace]

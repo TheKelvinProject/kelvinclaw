@@ -1,6 +1,7 @@
 [workspace]
 members = [
   "crates/kelvin-core",
+  "crates/kelvin-sdk",
   "crates/kelvin-memory",
   "crates/kelvin-brain",
   "crates/kelvin-wasm",

@@ -1,0 +1,25 @@
+[package]
+name = "kelvin-sdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+
+[features]
+default = []
+memory_rpc = ["kelvin-memory-client"]
+memory_legacy_fallback = []
+
+[dependencies]
+async-trait.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+wat = "1"
+kelvin-core = { path = "../kelvin-core" }
+kelvin-brain = { path = "../kelvin-brain" }
+kelvin-memory = { path = "../kelvin-memory" }
+kelvin-wasm = { path = "../kelvin-wasm" }
+kelvin-memory-client = { path = "../kelvin-memory-client", optional = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

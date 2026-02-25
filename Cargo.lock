@@ -1104,6 +1104,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "kelvin-sdk"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "kelvin-brain",
+ "kelvin-core",
+ "kelvin-memory",
+ "kelvin-memory-client",
+ "kelvin-wasm",
+ "serde_json",
+ "tokio",
+ "wat",
+]
+
+[[package]]
 name = "kelvin-wasm"
 version = "0.1.0"
 dependencies = [
