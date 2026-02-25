@@ -28,7 +28,10 @@ Optional fields:
 
 - `entrypoint_sha256` (recommended integrity check)
 - `publisher` (required when signature verification is enforced)
-- `runtime` / `tool_name` / `capability_scopes` / `operational_controls`
+- `runtime` (`wasm_tool_v1` or `wasm_model_v1`)
+- `tool_name` (tool runtime)
+- `provider_name` + `model_name` (model runtime)
+- `capability_scopes` / `operational_controls`
 
 Optional package file:
 
@@ -40,6 +43,12 @@ Install Kelvin's first-party CLI plugin package:
 
 ```bash
 scripts/install-kelvin-cli-plugin.sh
+```
+
+Install Kelvin's first-party OpenAI model plugin package:
+
+```bash
+scripts/install-kelvin-openai-plugin.sh
 ```
 
 Generic package install:

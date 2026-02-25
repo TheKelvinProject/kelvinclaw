@@ -9,19 +9,23 @@ use async_trait::async_trait;
 use base64::{engine::general_purpose::STANDARD, Engine as _};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use serde::Deserialize;
-use serde_json::json;
+use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
 use tokio::sync::Mutex;
 use tokio::time;
+use wasmparser::{Parser, Payload};
 
 use kelvin_core::{
-    InMemoryPluginRegistry, KelvinError, KelvinResult, PluginCapability, PluginFactory,
-    PluginManifest, PluginRegistry, PluginSecurityPolicy, SdkToolRegistry, Tool, ToolCallInput,
-    ToolCallResult,
+    InMemoryPluginRegistry, KelvinError, KelvinResult, ModelInput, ModelOutput, ModelProvider,
+    PluginCapability, PluginFactory, PluginManifest, PluginRegistry, PluginSecurityPolicy,
+    SdkModelProviderRegistry, SdkToolRegistry, Tool, ToolCallInput, ToolCallResult,
 };
-use kelvin_wasm::{ClawCall, SandboxPolicy, WasmSkillHost};
+use kelvin_wasm::{
+    model_abi, ClawCall, ModelSandboxPolicy, SandboxPolicy, WasmModelHost, WasmSkillHost,
+};
 
-const DEFAULT_RUNTIME_KIND: &str = "wasm_tool_v1";
+const DEFAULT_TOOL_RUNTIME_KIND: &str = "wasm_tool_v1";
+const DEFAULT_MODEL_RUNTIME_KIND: &str = "wasm_model_v1";
 const DEFAULT_TIMEOUT_MS: u64 = 2_000;
 const DEFAULT_MAX_RETRIES: u32 = 0;
 const DEFAULT_MAX_CALLS_PER_MINUTE: usize = 120;
@@ -34,7 +38,9 @@ const DEFAULT_TRUST_POLICY_RELATIVE: &str = ".kelvinclaw/trusted_publishers.json
 pub struct LoadedInstalledPlugin {
     pub id: String,
     pub version: String,
-    pub tool_name: String,
+    pub tool_name: Option<String>,
+    pub provider_name: Option<String>,
+    pub model_name: Option<String>,
     pub runtime: String,
     pub publisher: Option<String>,
 }
@@ -43,6 +49,7 @@ pub struct LoadedInstalledPlugin {
 pub struct LoadedInstalledPlugins {
     pub plugin_registry: Arc<InMemoryPluginRegistry>,
     pub tool_registry: Arc<SdkToolRegistry>,
+    pub model_registry: Arc<SdkModelProviderRegistry>,
     pub loaded_plugins: Vec<LoadedInstalledPlugin>,
 }
 
@@ -83,6 +90,13 @@ pub fn load_installed_tool_plugins_default(
     core_version: impl Into<String>,
     security_policy: PluginSecurityPolicy,
 ) -> KelvinResult<LoadedInstalledPlugins> {
+    load_installed_plugins_default(core_version, security_policy)
+}
+
+pub fn load_installed_plugins_default(
+    core_version: impl Into<String>,
+    security_policy: PluginSecurityPolicy,
+) -> KelvinResult<LoadedInstalledPlugins> {
     let trust_policy_path = default_trust_policy_path()?;
     let trust_policy = if let Some(path) = maybe_load_trust_policy_path(&trust_policy_path)? {
         PublisherTrustPolicy::from_json_file(path)?
@@ -90,7 +104,7 @@ pub fn load_installed_tool_plugins_default(
         PublisherTrustPolicy::default()
     };
 
-    load_installed_tool_plugins(InstalledPluginLoaderConfig {
+    load_installed_plugins(InstalledPluginLoaderConfig {
         plugin_home: default_plugin_home()?,
         core_version: core_version.into(),
         security_policy,
@@ -262,6 +276,8 @@ struct InstalledPluginPackageManifest {
     max_core_version: Option<String>,
     runtime: Option<String>,
     tool_name: Option<String>,
+    provider_name: Option<String>,
+    model_name: Option<String>,
     entrypoint: String,
     entrypoint_sha256: Option<String>,
     publisher: Option<String>,
@@ -344,7 +360,7 @@ impl InstalledPluginPackageManifest {
     fn runtime_kind(&self) -> &str {
         self.runtime
             .as_deref()
-            .unwrap_or(DEFAULT_RUNTIME_KIND)
+            .unwrap_or(DEFAULT_TOOL_RUNTIME_KIND)
             .trim()
     }
 
@@ -373,6 +389,49 @@ impl InstalledPluginPackageManifest {
         }
         Ok(candidate)
     }
+
+    fn resolved_provider_name(&self) -> KelvinResult<String> {
+        let fallback = self.id.replace('.', "_");
+        let candidate = self
+            .provider_name
+            .as_deref()
+            .unwrap_or(&fallback)
+            .trim()
+            .to_string();
+        if candidate.is_empty() {
+            return Err(KelvinError::InvalidInput(format!(
+                "plugin '{}' has empty provider_name",
+                self.id
+            )));
+        }
+        if !candidate
+            .chars()
+            .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+        {
+            return Err(KelvinError::InvalidInput(format!(
+                "plugin '{}' has invalid provider_name '{}'",
+                self.id, candidate
+            )));
+        }
+        Ok(candidate)
+    }
+
+    fn resolved_model_name(&self) -> KelvinResult<String> {
+        let fallback = "default";
+        let candidate = self
+            .model_name
+            .as_deref()
+            .unwrap_or(fallback)
+            .trim()
+            .to_string();
+        if candidate.is_empty() {
+            return Err(KelvinError::InvalidInput(format!(
+                "plugin '{}' has empty model_name",
+                self.id
+            )));
+        }
+        Ok(candidate)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -396,6 +455,7 @@ struct InstalledWasmTool {
 }
 
 impl InstalledWasmTool {
+    #[allow(clippy::too_many_arguments)]
     fn new(
         plugin_id: String,
         plugin_version: String,
@@ -530,6 +590,149 @@ impl InstalledWasmTool {
     }
 }
 
+#[derive(Clone)]
+struct InstalledWasmModelProvider {
+    plugin_id: String,
+    plugin_version: String,
+    provider_name: String,
+    model_name: String,
+    entrypoint_abs: PathBuf,
+    host: Arc<WasmModelHost>,
+    scopes: CapabilityScopes,
+    controls: OperationalControls,
+    state: Arc<Mutex<OperationalState>>,
+}
+
+impl InstalledWasmModelProvider {
+    #[allow(clippy::too_many_arguments)]
+    fn new(
+        plugin_id: String,
+        plugin_version: String,
+        provider_name: String,
+        model_name: String,
+        entrypoint_abs: PathBuf,
+        host: Arc<WasmModelHost>,
+        scopes: CapabilityScopes,
+        controls: OperationalControls,
+    ) -> Self {
+        Self {
+            plugin_id,
+            plugin_version,
+            provider_name,
+            model_name,
+            entrypoint_abs,
+            host,
+            scopes,
+            controls,
+            state: Arc::new(Mutex::new(OperationalState::default())),
+        }
+    }
+
+    fn sandbox_policy(&self) -> ModelSandboxPolicy {
+        ModelSandboxPolicy {
+            network_allow_hosts: self.scopes.network_allow_hosts.clone(),
+            timeout_ms: self.controls.timeout_ms,
+            ..ModelSandboxPolicy::default()
+        }
+    }
+
+    async fn reserve_call_budget(&self) -> KelvinResult<()> {
+        let now = Instant::now();
+        let mut state = self.state.lock().await;
+
+        if let Some(open_until) = state.circuit_open_until {
+            if now < open_until {
+                return Err(KelvinError::Backend(format!(
+                    "model provider '{}:{}' circuit breaker is open; retry later",
+                    self.provider_name, self.model_name
+                )));
+            }
+            state.circuit_open_until = None;
+            state.consecutive_failures = 0;
+        }
+
+        let window = Duration::from_secs(60);
+        while let Some(ts) = state.call_timestamps.front() {
+            if now.duration_since(*ts) > window {
+                state.call_timestamps.pop_front();
+            } else {
+                break;
+            }
+        }
+
+        if state.call_timestamps.len() >= self.controls.max_calls_per_minute {
+            return Err(KelvinError::Timeout(format!(
+                "model provider '{}:{}' exceeded call budget ({} calls/minute)",
+                self.provider_name, self.model_name, self.controls.max_calls_per_minute
+            )));
+        }
+        state.call_timestamps.push_back(now);
+        Ok(())
+    }
+
+    async fn mark_success(&self) {
+        let mut state = self.state.lock().await;
+        state.consecutive_failures = 0;
+    }
+
+    async fn mark_failure(&self) {
+        let mut state = self.state.lock().await;
+        state.consecutive_failures = state.consecutive_failures.saturating_add(1);
+        if state.consecutive_failures >= self.controls.circuit_breaker_failures {
+            state.circuit_open_until = Some(
+                Instant::now() + Duration::from_millis(self.controls.circuit_breaker_cooldown_ms),
+            );
+            state.consecutive_failures = 0;
+        }
+    }
+
+    async fn execute_once(&self, input_json: String) -> KelvinResult<String> {
+        let host = self.host.clone();
+        let entrypoint = self.entrypoint_abs.clone();
+        let policy = self.sandbox_policy();
+
+        let mut task =
+            tokio::task::spawn_blocking(move || host.run_file(entrypoint, &input_json, policy));
+        match time::timeout(Duration::from_millis(self.controls.timeout_ms), &mut task).await {
+            Ok(join_result) => join_result.map_err(|err| {
+                KelvinError::Backend(format!("model provider task join failure: {err}"))
+            })?,
+            Err(_) => {
+                task.abort();
+                Err(KelvinError::Timeout(format!(
+                    "model provider '{}:{}' timed out after {}ms",
+                    self.provider_name, self.model_name, self.controls.timeout_ms
+                )))
+            }
+        }
+    }
+
+    fn decode_output_payload(&self, output_json: &str) -> KelvinResult<ModelOutput> {
+        let value: Value = serde_json::from_str(output_json).map_err(|err| {
+            KelvinError::InvalidInput(format!(
+                "model plugin '{}' returned invalid json: {err}",
+                self.plugin_id
+            ))
+        })?;
+        if let Some(message) = value
+            .get("error")
+            .and_then(|error| error.get("message"))
+            .and_then(|message| message.as_str())
+        {
+            return Err(KelvinError::Backend(format!(
+                "model plugin '{}@{}' failed: {}",
+                self.plugin_id, self.plugin_version, message
+            )));
+        }
+        serde_json::from_value::<ModelOutput>(value).map_err(|err| {
+            KelvinError::InvalidInput(format!(
+                "model plugin '{}' returned invalid model output: {err}",
+                self.plugin_id
+            ))
+        })
+    }
+}
+
 #[async_trait]
 impl Tool for InstalledWasmTool {
     fn name(&self) -> &str {
@@ -591,9 +794,56 @@ impl Tool for InstalledWasmTool {
     }
 }
 
+#[async_trait]
+impl ModelProvider for InstalledWasmModelProvider {
+    fn provider_name(&self) -> &str {
+        &self.provider_name
+    }
+
+    fn model_name(&self) -> &str {
+        &self.model_name
+    }
+
+    async fn infer(&self, input: ModelInput) -> KelvinResult<ModelOutput> {
+        self.reserve_call_budget().await?;
+        let input_json = serde_json::to_string(&input).map_err(|err| {
+            KelvinError::InvalidInput(format!(
+                "serialize model input for plugin '{}': {err}",
+                self.plugin_id
+            ))
+        })?;
+
+        let mut last_error = None;
+        for attempt in 0..=self.controls.max_retries {
+            match self.execute_once(input_json.clone()).await {
+                Ok(output_json) => {
+                    let output = self.decode_output_payload(&output_json)?;
+                    self.mark_success().await;
+                    return Ok(output);
+                }
+                Err(err) => {
+                    last_error = Some(err);
+                    if attempt < self.controls.max_retries {
+                        continue;
+                    }
+                }
+            }
+        }
+
+        self.mark_failure().await;
+        Err(last_error.unwrap_or_else(|| {
+            KelvinError::Backend(format!(
+                "model provider '{}:{}' failed without error detail",
+                self.provider_name, self.model_name
+            ))
+        }))
+    }
+}
+
 struct InstalledWasmPluginFactory {
     manifest: PluginManifest,
-    tool: Arc<InstalledWasmTool>,
+    tool: Option<Arc<InstalledWasmTool>>,
+    model_provider: Option<Arc<InstalledWasmModelProvider>>,
 }
 
 impl PluginFactory for InstalledWasmPluginFactory {
@@ -602,11 +852,23 @@ impl PluginFactory for InstalledWasmPluginFactory {
     }
 
     fn tool(&self) -> Option<Arc<dyn Tool>> {
-        Some(self.tool.clone())
+        self.tool.clone().map(|tool| tool as Arc<dyn Tool>)
+    }
+
+    fn model_provider(&self) -> Option<Arc<dyn ModelProvider>> {
+        self.model_provider
+            .clone()
+            .map(|provider| provider as Arc<dyn ModelProvider>)
     }
 }
 
 pub fn load_installed_tool_plugins(
+    config: InstalledPluginLoaderConfig,
+) -> KelvinResult<LoadedInstalledPlugins> {
+    load_installed_plugins(config)
+}
+
+pub fn load_installed_plugins(
     config: InstalledPluginLoaderConfig,
 ) -> KelvinResult<LoadedInstalledPlugins> {
     let plugin_registry = Arc::new(InMemoryPluginRegistry::new());
@@ -616,23 +878,36 @@ pub fn load_installed_tool_plugins(
         let tool_registry = Arc::new(SdkToolRegistry::from_plugin_registry(
             plugin_registry.as_ref(),
         )?);
+        let model_registry = Arc::new(SdkModelProviderRegistry::from_plugin_registry(
+            plugin_registry.as_ref(),
+        )?);
         return Ok(LoadedInstalledPlugins {
             plugin_registry,
             tool_registry,
+            model_registry,
             loaded_plugins,
         });
     }
 
     let plugin_dirs = collect_plugin_dirs(&config.plugin_home)?;
-    let host = Arc::new(WasmSkillHost::try_new()?);
+    let skill_host = Arc::new(WasmSkillHost::try_new()?);
+    let model_host = Arc::new(WasmModelHost::try_new()?);
     for plugin_dir in plugin_dirs {
-        let plugin = load_one_plugin(&plugin_dir, &config, host.clone())?;
+        let plugin = load_one_plugin(&plugin_dir, &config, skill_host.clone(), model_host.clone())?;
 
         let loaded = LoadedInstalledPlugin {
             id: plugin.manifest.id.clone(),
             version: plugin.manifest.version.clone(),
-            tool_name: plugin.tool.name().to_string(),
-            runtime: DEFAULT_RUNTIME_KIND.to_string(),
+            tool_name: plugin.tool.as_ref().map(|tool| tool.name().to_string()),
+            provider_name: plugin
+                .model_provider
+                .as_ref()
+                .map(|provider| provider.provider_name.clone()),
+            model_name: plugin
+                .model_provider
+                .as_ref()
+                .map(|provider| provider.model_name.clone()),
+            runtime: plugin.runtime.clone(),
             publisher: plugin.publisher.clone(),
         };
 
@@ -640,6 +915,7 @@ pub fn load_installed_tool_plugins(
             Arc::new(InstalledWasmPluginFactory {
                 manifest: plugin.manifest,
                 tool: plugin.tool,
+                model_provider: plugin.model_provider,
             }),
             &config.core_version,
             &config.security_policy,
@@ -651,29 +927,39 @@ pub fn load_installed_tool_plugins(
         left.id
             .cmp(&right.id)
             .then_with(|| left.version.cmp(&right.version))
+            .then_with(|| left.runtime.cmp(&right.runtime))
             .then_with(|| left.tool_name.cmp(&right.tool_name))
+            .then_with(|| left.provider_name.cmp(&right.provider_name))
+            .then_with(|| left.model_name.cmp(&right.model_name))
     });
 
     let tool_registry = Arc::new(SdkToolRegistry::from_plugin_registry(
         plugin_registry.as_ref(),
     )?);
+    let model_registry = Arc::new(SdkModelProviderRegistry::from_plugin_registry(
+        plugin_registry.as_ref(),
+    )?);
     Ok(LoadedInstalledPlugins {
         plugin_registry,
         tool_registry,
+        model_registry,
         loaded_plugins,
     })
 }
 
 struct LoadedPluginFactoryData {
     manifest: PluginManifest,
-    tool: Arc<InstalledWasmTool>,
+    tool: Option<Arc<InstalledWasmTool>>,
+    model_provider: Option<Arc<InstalledWasmModelProvider>>,
+    runtime: String,
     publisher: Option<String>,
 }
 
 fn load_one_plugin(
     plugin_dir: &Path,
     config: &InstalledPluginLoaderConfig,
-    host: Arc<WasmSkillHost>,
+    skill_host: Arc<WasmSkillHost>,
+    model_host: Arc<WasmModelHost>,
 ) -> KelvinResult<LoadedPluginFactoryData> {
     let plugin_id = plugin_dir
         .file_name()
@@ -698,41 +984,11 @@ fn load_one_plugin(
         )));
     }
 
-    if package_manifest.runtime_kind() != DEFAULT_RUNTIME_KIND {
+    let runtime_kind = package_manifest.runtime_kind();
+    if runtime_kind != DEFAULT_TOOL_RUNTIME_KIND && runtime_kind != DEFAULT_MODEL_RUNTIME_KIND {
         return Err(KelvinError::InvalidInput(format!(
-            "unsupported plugin runtime '{}'; expected '{}'",
-            package_manifest.runtime_kind(),
-            DEFAULT_RUNTIME_KIND
-        )));
-    }
-
-    if !package_manifest
-        .capabilities
-        .contains(&PluginCapability::ToolProvider)
-    {
-        return Err(KelvinError::InvalidInput(format!(
-            "plugin '{}' runtime '{}' requires capability '{}'",
-            package_manifest.id, DEFAULT_RUNTIME_KIND, "tool_provider"
-        )));
-    }
-
-    if package_manifest
-        .capabilities
-        .contains(&PluginCapability::FsWrite)
-    {
-        return Err(KelvinError::InvalidInput(format!(
-            "plugin '{}' declares unsupported capability 'fs_write' for runtime '{}'",
-            package_manifest.id, DEFAULT_RUNTIME_KIND
-        )));
-    }
-
-    if package_manifest
-        .capabilities
-        .contains(&PluginCapability::CommandExecution)
-    {
-        return Err(KelvinError::InvalidInput(format!(
-            "plugin '{}' declares unsupported capability 'command_execution' for runtime '{}'",
-            package_manifest.id, DEFAULT_RUNTIME_KIND
+            "unsupported plugin runtime '{}'; expected '{}' or '{}'",
+            runtime_kind, DEFAULT_TOOL_RUNTIME_KIND, DEFAULT_MODEL_RUNTIME_KIND
         )));
     }
 
@@ -744,7 +1000,6 @@ fn load_one_plugin(
 
     let core_manifest = package_manifest.to_core_manifest();
     core_manifest.validate()?;
-    let tool_name = package_manifest.resolved_tool_name()?;
     let entrypoint_rel = normalize_safe_relative_path(&package_manifest.entrypoint, "entrypoint")?;
     let entrypoint_abs = version_dir.join("payload").join(&entrypoint_rel);
     if !entrypoint_abs.is_file() {
@@ -767,22 +1022,100 @@ fn load_one_plugin(
 
     let scopes = normalize_scopes(&package_manifest)?;
     let controls = normalize_controls(&package_manifest)?;
-    let sandbox_policy = sandbox_from_manifest(&package_manifest)?;
+    let mut tool = None;
+    let mut model_provider = None;
 
-    let tool = Arc::new(InstalledWasmTool::new(
-        package_manifest.id.clone(),
-        package_manifest.version.clone(),
-        tool_name,
-        entrypoint_abs,
-        host,
-        sandbox_policy,
-        scopes,
-        controls,
-    ));
+    if runtime_kind == DEFAULT_TOOL_RUNTIME_KIND {
+        if !package_manifest
+            .capabilities
+            .contains(&PluginCapability::ToolProvider)
+        {
+            return Err(KelvinError::InvalidInput(format!(
+                "plugin '{}' runtime '{}' requires capability '{}'",
+                package_manifest.id, DEFAULT_TOOL_RUNTIME_KIND, "tool_provider"
+            )));
+        }
+
+        if package_manifest
+            .capabilities
+            .contains(&PluginCapability::FsWrite)
+        {
+            return Err(KelvinError::InvalidInput(format!(
+                "plugin '{}' declares unsupported capability 'fs_write' for runtime '{}'",
+                package_manifest.id, DEFAULT_TOOL_RUNTIME_KIND
+            )));
+        }
+
+        if package_manifest
+            .capabilities
+            .contains(&PluginCapability::CommandExecution)
+        {
+            return Err(KelvinError::InvalidInput(format!(
+                "plugin '{}' declares unsupported capability 'command_execution' for runtime '{}'",
+                package_manifest.id, DEFAULT_TOOL_RUNTIME_KIND
+            )));
+        }
+
+        let tool_name = package_manifest.resolved_tool_name()?;
+        let sandbox_policy = sandbox_from_manifest(&package_manifest)?;
+        tool = Some(Arc::new(InstalledWasmTool::new(
+            package_manifest.id.clone(),
+            package_manifest.version.clone(),
+            tool_name,
+            entrypoint_abs.clone(),
+            skill_host,
+            sandbox_policy,
+            scopes.clone(),
+            controls.clone(),
+        )));
+    } else {
+        if !package_manifest
+            .capabilities
+            .contains(&PluginCapability::ModelProvider)
+        {
+            return Err(KelvinError::InvalidInput(format!(
+                "plugin '{}' runtime '{}' requires capability '{}'",
+                package_manifest.id, DEFAULT_MODEL_RUNTIME_KIND, "model_provider"
+            )));
+        }
+        if package_manifest
+            .capabilities
+            .contains(&PluginCapability::FsRead)
+            || package_manifest
+                .capabilities
+                .contains(&PluginCapability::FsWrite)
+            || package_manifest
+                .capabilities
+                .contains(&PluginCapability::CommandExecution)
+        {
+            return Err(KelvinError::InvalidInput(format!(
+                "plugin '{}' runtime '{}' only supports model_provider and optional network_egress capabilities",
+                package_manifest.id, DEFAULT_MODEL_RUNTIME_KIND
+            )));
+        }
+
+        let provider_name = package_manifest.resolved_provider_name()?;
+        let model_name = package_manifest.resolved_model_name()?;
+        model_provider = Some(Arc::new(InstalledWasmModelProvider::new(
+            package_manifest.id.clone(),
+            package_manifest.version.clone(),
+            provider_name,
+            model_name,
+            entrypoint_abs.clone(),
+            model_host,
+            scopes.clone(),
+            controls.clone(),
+        )));
+
+        let entrypoint_bytes = fs::read(&entrypoint_abs)?;
+        validate_model_plugin_imports(&entrypoint_bytes, &package_manifest.id)?;
+    }
 
     Ok(LoadedPluginFactoryData {
         manifest: core_manifest,
         tool,
+        model_provider,
+        runtime: runtime_kind.to_string(),
         publisher: package_manifest.publisher.clone(),
     })
 }
@@ -873,6 +1206,8 @@ fn normalize_scopes(manifest: &InstalledPluginPackageManifest) -> KelvinResult<C
     let has_network = manifest
         .capabilities
         .contains(&PluginCapability::NetworkEgress);
+    let runtime_requires_network_scope = manifest.runtime_kind() == DEFAULT_MODEL_RUNTIME_KIND;
+    let network_scope_required = has_network || runtime_requires_network_scope;
 
     let mut fs_read_paths = Vec::new();
     for path in &manifest.capability_scopes.fs_read_paths {
@@ -898,13 +1233,13 @@ fn normalize_scopes(manifest: &InstalledPluginPackageManifest) -> KelvinResult<C
     for host in &manifest.capability_scopes.network_allow_hosts {
         network_allow_hosts.push(normalize_host_pattern(host)?);
     }
-    if has_network && network_allow_hosts.is_empty() {
+    if network_scope_required && network_allow_hosts.is_empty() {
         return Err(KelvinError::InvalidInput(format!(
-            "plugin '{}' declares network_egress but has no network allowlist",
+            "plugin '{}' requires network allowlist but has no network allow hosts",
             manifest.id
         )));
     }
-    if !has_network && !network_allow_hosts.is_empty() {
+    if !has_network && !runtime_requires_network_scope && !network_allow_hosts.is_empty() {
         return Err(KelvinError::InvalidInput(format!(
             "plugin '{}' has network allowlist but does not declare network_egress capability",
             manifest.id
@@ -984,6 +1319,38 @@ fn sandbox_from_manifest(manifest: &InstalledPluginPackageManifest) -> KelvinRes
         )));
     }
     Ok(policy)
+}
+
+fn validate_model_plugin_imports(wasm_bytes: &[u8], plugin_id: &str) -> KelvinResult<()> {
+    for payload in Parser::new(0).parse_all(wasm_bytes) {
+        let payload = payload
+            .map_err(|err| KelvinError::InvalidInput(format!("invalid model wasm: {err}")))?;
+        if let Payload::ImportSection(section) = payload {
+            for import in section {
+                let import = import.map_err(|err| {
+                    KelvinError::InvalidInput(format!("invalid model wasm import section: {err}"))
+                })?;
+                if import.module != model_abi::MODULE {
+                    return Err(KelvinError::InvalidInput(format!(
+                        "model plugin '{}' has forbidden import module '{}'",
+                        plugin_id, import.module
+                    )));
+                }
+                match import.name {
+                    model_abi::IMPORT_OPENAI_RESPONSES_CALL
+                    | model_abi::IMPORT_LOG
+                    | model_abi::IMPORT_CLOCK_NOW_MS => {}
+                    name => {
+                        return Err(KelvinError::InvalidInput(format!(
+                            "model plugin '{}' has forbidden import '{}.{}'",
+                            plugin_id, import.module, name
+                        )));
+                    }
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1124,7 +1491,8 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        load_installed_tool_plugins, sha256_hex, InstalledPluginLoaderConfig, PublisherTrustPolicy,
+        load_installed_plugins, load_installed_tool_plugins, sha256_hex,
+        InstalledPluginLoaderConfig, PublisherTrustPolicy,
     };
     use kelvin_core::{PluginSecurityPolicy, ToolCallInput, ToolRegistry};
 
@@ -1192,6 +1560,36 @@ mod tests {
             "capability_scopes": {
                 "fs_read_paths": [],
                 "network_allow_hosts": []
+            },
+            "operational_controls": {
+                "timeout_ms": 2000,
+                "max_retries": 0,
+                "max_calls_per_minute": 100,
+                "circuit_breaker_failures": 2,
+                "circuit_breaker_cooldown_ms": 1000
+            }
+        })
+    }
+
+    fn default_model_manifest(plugin_id: &str, version: &str) -> serde_json::Value {
+        json!({
+            "id": plugin_id,
+            "name": "Installed Model Plugin",
+            "version": version,
+            "api_version": "1.0.0",
+            "description": "installed runtime model plugin",
+            "homepage": "https://example.com/plugin",
+            "capabilities": ["model_provider"],
+            "experimental": false,
+            "runtime": "wasm_model_v1",
+            "provider_name": "openai",
+            "model_name": "gpt-4.1-mini",
+            "entrypoint": "model.wasm",
+            "entrypoint_sha256": null,
+            "publisher": "acme",
+            "capability_scopes": {
+                "fs_read_paths": [],
+                "network_allow_hosts": ["api.openai.com"]
             },
             "operational_controls": {
                 "timeout_ms": 2000,
@@ -1401,5 +1799,70 @@ mod tests {
             .await
             .expect_err("rate limit should apply");
         assert!(rate_err.to_string().contains("exceeded call budget"));
+    }
+
+    #[test]
+    fn loads_signed_model_plugin_and_projects_model_registry() {
+        let plugin_home = unique_temp_dir("load-model");
+        let signing_key = SigningKey::from_bytes(&[10_u8; 32]);
+        let public_key = base64::engine::general_purpose::STANDARD
+            .encode(signing_key.verifying_key().to_bytes());
+
+        write_installed_plugin(
+            &plugin_home,
+            "acme.openai",
+            "1.0.0",
+            default_model_manifest("acme.openai", "1.0.0"),
+            r#"
+            (module
+              (import "kelvin_model_host_v1" "openai_responses_call" (func $openai_responses_call (param i32 i32) (result i64)))
+              (import "kelvin_model_host_v1" "log" (func $log (param i32 i32 i32) (result i32)))
+              (import "kelvin_model_host_v1" "clock_now_ms" (func $clock_now_ms (result i64)))
+              (memory (export "memory") 2)
+              (global $heap (mut i32) (i32.const 1024))
+              (func (export "alloc") (param $len i32) (result i32)
+                (local $ptr i32)
+                global.get $heap
+                local.tee $ptr
+                local.get $len
+                i32.add
+                global.set $heap
+                local.get $ptr)
+              (func (export "dealloc") (param i32 i32))
+              (func (export "infer") (param $ptr i32) (param $len i32) (result i64)
+                local.get $ptr
+                local.get $len
+                call $openai_responses_call)
+            )
+            "#,
+            Some(&signing_key),
+        );
+
+        let trust_policy = PublisherTrustPolicy::default()
+            .with_publisher_key("acme", &public_key)
+            .expect("publisher key");
+        let loaded = load_installed_plugins(InstalledPluginLoaderConfig {
+            plugin_home,
+            core_version: "0.1.0".to_string(),
+            security_policy: PluginSecurityPolicy::default(),
+            trust_policy,
+        })
+        .expect("load installed model plugin");
+
+        assert_eq!(loaded.loaded_plugins.len(), 1);
+        assert_eq!(
+            loaded.loaded_plugins[0].provider_name.as_deref(),
+            Some("openai")
+        );
+        assert_eq!(
+            loaded.loaded_plugins[0].model_name.as_deref(),
+            Some("gpt-4.1-mini")
+        );
+        let provider = loaded
+            .model_registry
+            .get_by_plugin_id("acme.openai")
+            .expect("model registry entry");
+        assert_eq!(provider.provider_name(), "openai");
+        assert_eq!(provider.model_name(), "gpt-4.1-mini");
     }
 }

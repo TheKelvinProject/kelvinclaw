@@ -7,11 +7,11 @@ use async_trait::async_trait;
 use serde_json::json;
 use tokio::sync::RwLock;
 
-use kelvin_brain::{load_installed_tool_plugins_default, EchoModelProvider, KelvinBrain};
+use kelvin_brain::{load_installed_plugins_default, EchoModelProvider, KelvinBrain};
 use kelvin_core::{
     now_ms, AgentEvent, AgentRunRequest, CoreRuntime, EventSink, KelvinError, KelvinResult,
-    MemorySearchManager, PluginSecurityPolicy, RunOutcome, SessionDescriptor, SessionMessage,
-    SessionStore, Tool, ToolCallInput, ToolCallResult, ToolRegistry,
+    MemorySearchManager, ModelProvider, PluginSecurityPolicy, RunOutcome, SessionDescriptor,
+    SessionMessage, SessionStore, Tool, ToolCallInput, ToolCallResult, ToolRegistry,
 };
 #[cfg(any(not(feature = "memory_rpc"), feature = "memory_legacy_fallback"))]
 use kelvin_memory::MemoryBackendKind;
@@ -59,6 +59,7 @@ pub struct KelvinSdkConfig {
     pub core_version: String,
     pub plugin_security_policy: PluginSecurityPolicy,
     pub load_installed_plugins: bool,
+    pub model_provider: KelvinSdkModelSelection,
 }
 
 impl KelvinSdkConfig {
@@ -73,8 +74,15 @@ impl KelvinSdkConfig {
             core_version: "0.1.0".to_string(),
             plugin_security_policy: PluginSecurityPolicy::default(),
             load_installed_plugins: true,
+            model_provider: KelvinSdkModelSelection::Echo,
         }
     }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum KelvinSdkModelSelection {
+    Echo,
+    InstalledPlugin { plugin_id: String },
 }
 
 #[derive(Debug, Clone)]
@@ -210,6 +218,9 @@ impl ToolRegistry for CombinedToolRegistry {
     }
 }
 
+type InstalledModelProviders = Vec<(String, Arc<dyn ModelProvider>)>;
+type LoadedInstalledPlugins = (Arc<dyn ToolRegistry>, InstalledModelProviders, usize);
+
 #[derive(Debug, Clone)]
 struct TimeTool;
 
@@ -275,16 +286,23 @@ pub async fn run_with_sdk(config: KelvinSdkConfig) -> KelvinResult<KelvinRunSumm
         "Hello from Kelvin SDK built-in tools.",
     ));
 
-    let (installed_tools, loaded_installed_plugins): (Arc<dyn ToolRegistry>, usize) =
+    let (installed_tools, installed_models, loaded_installed_plugins): LoadedInstalledPlugins =
         if config.load_installed_plugins {
-            let loaded = load_installed_tool_plugins_default(
+            let loaded = load_installed_plugins_default(
                 &config.core_version,
                 config.plugin_security_policy.clone(),
             )?;
             println!("loaded installed plugins: {}", loaded.loaded_plugins.len());
-            (loaded.tool_registry, loaded.loaded_plugins.len())
+
+            let mut models = Vec::new();
+            for plugin_id in loaded.model_registry.plugin_ids() {
+                if let Some(provider) = loaded.model_registry.get_by_plugin_id(&plugin_id) {
+                    models.push((plugin_id, provider));
+                }
+            }
+            (loaded.tool_registry, models, loaded.loaded_plugins.len())
         } else {
-            (Arc::new(HashMapToolRegistry::default()), 0)
+            (Arc::new(HashMapToolRegistry::default()), Vec::new(), 0)
         };
 
     let cli_plugin_tool = installed_tools.get("kelvin_cli").ok_or_else(|| {
@@ -345,7 +363,32 @@ pub async fn run_with_sdk(config: KelvinSdkConfig) -> KelvinResult<KelvinRunSumm
     let memory: Arc<dyn MemorySearchManager> =
         MemoryFactory::build(&config.workspace_dir, config.memory_mode.as_backend_kind());
 
-    let model = Arc::new(EchoModelProvider::new("kelvin", "echo-v1"));
+    let model: Arc<dyn ModelProvider> = match &config.model_provider {
+        KelvinSdkModelSelection::Echo => Arc::new(EchoModelProvider::new("kelvin", "echo-v1")),
+        KelvinSdkModelSelection::InstalledPlugin { plugin_id } => {
+            if !config.load_installed_plugins {
+                return Err(KelvinError::InvalidInput(format!(
+                    "model provider '{}' requested but load_installed_plugins is false",
+                    plugin_id
+                )));
+            }
+            installed_models
+                .iter()
+                .find_map(|(id, provider)| {
+                    if id == plugin_id {
+                        Some(provider.clone())
+                    } else {
+                        None
+                    }
+                })
+                .ok_or_else(|| {
+                    KelvinError::NotFound(format!(
+                        "configured model provider plugin '{}' not found; install it and ensure policy allows it",
+                        plugin_id
+                    ))
+                })?
+        }
+    };
     let brain = Arc::new(KelvinBrain::new(
         session_store,
         memory,
@@ -396,20 +439,24 @@ pub async fn run_with_sdk(config: KelvinSdkConfig) -> KelvinResult<KelvinRunSumm
 #[cfg(test)]
 mod tests {
     use std::path::Path;
+    use std::sync::Mutex;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
-    use super::{run_with_sdk, KelvinCliMemoryMode, KelvinSdkConfig};
+    use base64::Engine as _;
+    use ed25519_dalek::{Signer, SigningKey};
+    use mockito::Server;
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
 
-    fn repo_root() -> std::path::PathBuf {
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("..")
-            .join("..")
-            .canonicalize()
-            .expect("resolve repo root")
-    }
+    use super::{run_with_sdk, KelvinCliMemoryMode, KelvinSdkConfig, KelvinSdkModelSelection};
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    const TEST_PUBLISHER_ID: &str = "kelvin_sdk_test";
+    const TEST_SIGNING_KEY_BYTES: [u8; 32] = [31_u8; 32];
 
     fn unique_workspace() -> std::path::PathBuf {
-        let millis = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
             .map(|value| value.as_millis())
             .unwrap_or_default();
         let path = std::env::temp_dir().join(format!("kelvin-sdk-test-{millis}"));
@@ -417,29 +464,209 @@ mod tests {
         path
     }
 
-    fn seed_plugin_home(repo_root: &Path, plugin_home: &Path) {
-        let source = repo_root.join("plugins/kelvin-cli");
-        let version_dir = plugin_home.join("kelvin.cli").join("0.1.0");
-        let payload_dir = version_dir.join("payload");
+    fn sha256_hex(bytes: &[u8]) -> String {
+        let digest = Sha256::digest(bytes);
+        let mut out = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            out.push_str(&format!("{byte:02x}"));
+        }
+        out
+    }
 
-        std::fs::create_dir_all(&payload_dir).expect("create payload dir");
-        std::fs::copy(source.join("plugin.json"), version_dir.join("plugin.json"))
-            .expect("copy plugin manifest");
-        std::fs::copy(source.join("plugin.sig"), version_dir.join("plugin.sig"))
-            .expect("copy plugin signature");
-        std::fs::copy(
-            source.join("payload/kelvin_cli.wasm"),
-            payload_dir.join("kelvin_cli.wasm"),
+    fn parse_wat(input: &str) -> Vec<u8> {
+        wat::parse_str(input).expect("parse wat")
+    }
+
+    fn cli_test_wasm() -> Vec<u8> {
+        parse_wat(
+            r#"
+            (module
+              (import "claw" "send_message" (func $send_message (param i32) (result i32)))
+              (func (export "run") (result i32)
+                i32.const 7
+                call $send_message
+                drop
+                i32.const 0)
+            )
+            "#,
         )
-        .expect("copy plugin payload");
+    }
+
+    fn model_test_wasm() -> Vec<u8> {
+        parse_wat(
+            r#"
+            (module
+              (import "kelvin_model_host_v1" "openai_responses_call" (func $openai_responses_call (param i32 i32) (result i64)))
+              (import "kelvin_model_host_v1" "log" (func $log (param i32 i32 i32) (result i32)))
+              (import "kelvin_model_host_v1" "clock_now_ms" (func $clock_now_ms (result i64)))
+              (memory (export "memory") 2)
+              (global $heap (mut i32) (i32.const 1024))
+              (func (export "alloc") (param $len i32) (result i32)
+                (local $ptr i32)
+                global.get $heap
+                local.tee $ptr
+                local.get $len
+                i32.add
+                global.set $heap
+                local.get $ptr)
+              (func (export "dealloc") (param i32 i32))
+              (func (export "infer") (param $ptr i32) (param $len i32) (result i64)
+                local.get $ptr
+                local.get $len
+                call $openai_responses_call)
+            )
+            "#,
+        )
+    }
+
+    fn test_signing_key() -> SigningKey {
+        SigningKey::from_bytes(&TEST_SIGNING_KEY_BYTES)
+    }
+
+    fn write_trust_policy_file(trust_policy_path: &Path, signing_key: &SigningKey) {
+        if let Some(parent) = trust_policy_path.parent() {
+            std::fs::create_dir_all(parent).expect("create trust policy parent");
+        }
+        let public_key = base64::engine::general_purpose::STANDARD
+            .encode(signing_key.verifying_key().to_bytes());
+        let trust_policy = json!({
+            "require_signature": true,
+            "publishers": [
+                {
+                    "id": TEST_PUBLISHER_ID,
+                    "ed25519_public_key": public_key,
+                }
+            ]
+        });
+        std::fs::write(
+            trust_policy_path,
+            serde_json::to_vec_pretty(&trust_policy).expect("serialize trust policy"),
+        )
+        .expect("write trust policy file");
+    }
+
+    fn write_signed_plugin(
+        plugin_home: &Path,
+        plugin_id: &str,
+        version: &str,
+        entrypoint: &str,
+        wasm_bytes: &[u8],
+        mut manifest: serde_json::Value,
+        signing_key: &SigningKey,
+    ) {
+        let version_dir = plugin_home.join(plugin_id).join(version);
+        let payload_dir = version_dir.join("payload");
+        std::fs::create_dir_all(&payload_dir).expect("create payload dir");
+
+        std::fs::write(payload_dir.join(entrypoint), wasm_bytes).expect("write wasm payload");
+        manifest["entrypoint_sha256"] = json!(sha256_hex(wasm_bytes));
+        let manifest_bytes = serde_json::to_vec_pretty(&manifest).expect("manifest bytes");
+        std::fs::write(version_dir.join("plugin.json"), &manifest_bytes).expect("write manifest");
+
+        let signature = signing_key.sign(&manifest_bytes);
+        let signature_base64 =
+            base64::engine::general_purpose::STANDARD.encode(signature.to_bytes());
+        std::fs::write(version_dir.join("plugin.sig"), signature_base64).expect("write signature");
+    }
+
+    fn seed_cli_plugin_for_tests(plugin_home: &Path, trust_policy_path: &Path) {
+        let signing_key = test_signing_key();
+        write_signed_plugin(
+            plugin_home,
+            "kelvin.cli",
+            "0.1.0",
+            "kelvin_cli.wasm",
+            &cli_test_wasm(),
+            json!({
+                "id": "kelvin.cli",
+                "name": "Kelvin CLI Plugin (Test)",
+                "version": "0.1.0",
+                "api_version": "1.0.0",
+                "description": "test cli plugin",
+                "homepage": "https://example.com/kelvin-cli-test-plugin",
+                "capabilities": ["tool_provider"],
+                "experimental": false,
+                "min_core_version": "0.1.0",
+                "max_core_version": null,
+                "runtime": "wasm_tool_v1",
+                "tool_name": "kelvin_cli",
+                "entrypoint": "kelvin_cli.wasm",
+                "entrypoint_sha256": null,
+                "publisher": TEST_PUBLISHER_ID,
+                "capability_scopes": {
+                    "fs_read_paths": [],
+                    "network_allow_hosts": []
+                },
+                "operational_controls": {
+                    "timeout_ms": 2000,
+                    "max_retries": 0,
+                    "max_calls_per_minute": 120,
+                    "circuit_breaker_failures": 3,
+                    "circuit_breaker_cooldown_ms": 30000
+                }
+            }),
+            &signing_key,
+        );
+        write_trust_policy_file(trust_policy_path, &signing_key);
+    }
+
+    fn seed_openai_plugin_for_mock_host(
+        plugin_home: &Path,
+        trust_policy_path: &Path,
+        allow_host: &str,
+    ) {
+        let signing_key = test_signing_key();
+        let wasm_bytes = model_test_wasm();
+        let plugin_id = "acme.openai";
+        write_signed_plugin(
+            plugin_home,
+            plugin_id,
+            "0.1.0",
+            "kelvin_openai.wasm",
+            &wasm_bytes,
+            json!({
+                "id": plugin_id,
+                "name": "Acme OpenAI Plugin",
+                "version": "0.1.0",
+                "api_version": "1.0.0",
+                "description": "test openai model plugin",
+                "homepage": "https://example.com/openai-plugin",
+                "capabilities": ["model_provider"],
+                "experimental": false,
+                "min_core_version": "0.1.0",
+                "max_core_version": null,
+                "runtime": "wasm_model_v1",
+                "provider_name": "openai",
+                "model_name": "gpt-4.1-mini",
+                "entrypoint": "kelvin_openai.wasm",
+                "entrypoint_sha256": null,
+                "publisher": TEST_PUBLISHER_ID,
+                "capability_scopes": {
+                    "fs_read_paths": [],
+                    "network_allow_hosts": [allow_host]
+                },
+                "operational_controls": {
+                    "timeout_ms": 5000,
+                    "max_retries": 0,
+                    "max_calls_per_minute": 120,
+                    "circuit_breaker_failures": 3,
+                    "circuit_breaker_cooldown_ms": 1000
+                }
+            }),
+            &signing_key,
+        );
+        write_trust_policy_file(trust_policy_path, &signing_key);
     }
 
     #[tokio::test]
     async fn run_with_sdk_executes_cli_plugin_and_returns_payload() {
-        let root = repo_root();
-        let plugin_home = unique_workspace().join("plugins");
-        let trust_policy = root.join("plugins/trusted_publishers.kelvin.json");
-        seed_plugin_home(&root, &plugin_home);
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let fixture_root = unique_workspace();
+        let plugin_home = fixture_root.join("plugins");
+        let trust_policy = fixture_root.join("trusted_publishers.json");
+        seed_cli_plugin_for_tests(&plugin_home, &trust_policy);
         assert!(
             trust_policy.is_file(),
             "missing trust policy file: {}",
@@ -474,5 +701,181 @@ mod tests {
             .payloads
             .iter()
             .any(|payload| payload.contains("Echo: hello sdk")));
+    }
+
+    #[tokio::test]
+    async fn run_with_sdk_uses_installed_openai_model_plugin_via_mock_server() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let workspace = unique_workspace();
+        let plugin_home = workspace.join("plugins");
+        let trust_policy = workspace.join("trusted_publishers.json");
+        seed_cli_plugin_for_tests(&plugin_home, &trust_policy);
+
+        let mut server = Server::new_async().await;
+        let response_body = json!({
+            "assistant_text": "mock-openai-ok",
+            "stop_reason": "completed",
+            "tool_calls": [],
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 4,
+                "total_tokens": 14
+            }
+        })
+        .to_string();
+        let mock = server
+            .mock("POST", "/v1/responses")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(response_body)
+            .create_async()
+            .await;
+        let base_url = server.url();
+        let allow_host = "127.0.0.1".to_string();
+        seed_openai_plugin_for_mock_host(&plugin_home, &trust_policy, &allow_host);
+
+        let previous_plugin_home = std::env::var("KELVIN_PLUGIN_HOME").ok();
+        let previous_trust_policy = std::env::var("KELVIN_TRUST_POLICY_PATH").ok();
+        let previous_openai_key = std::env::var("OPENAI_API_KEY").ok();
+        let previous_openai_base = std::env::var("OPENAI_BASE_URL").ok();
+        std::env::set_var("KELVIN_PLUGIN_HOME", plugin_home.as_os_str());
+        std::env::set_var("KELVIN_TRUST_POLICY_PATH", trust_policy.as_os_str());
+        std::env::set_var("OPENAI_API_KEY", "test-key");
+        std::env::set_var("OPENAI_BASE_URL", &base_url);
+
+        let mut config = KelvinSdkConfig::for_prompt("hello openai");
+        config.workspace_dir = workspace.clone();
+        config.timeout_ms = 5_000;
+        config.memory_mode = KelvinCliMemoryMode::Fallback;
+        config.load_installed_plugins = true;
+        config.model_provider = KelvinSdkModelSelection::InstalledPlugin {
+            plugin_id: "acme.openai".to_string(),
+        };
+
+        let result = run_with_sdk(config).await.expect("run with openai plugin");
+        mock.assert_async().await;
+
+        match previous_plugin_home {
+            Some(value) => std::env::set_var("KELVIN_PLUGIN_HOME", value),
+            None => std::env::remove_var("KELVIN_PLUGIN_HOME"),
+        }
+        match previous_trust_policy {
+            Some(value) => std::env::set_var("KELVIN_TRUST_POLICY_PATH", value),
+            None => std::env::remove_var("KELVIN_TRUST_POLICY_PATH"),
+        }
+        match previous_openai_key {
+            Some(value) => std::env::set_var("OPENAI_API_KEY", value),
+            None => std::env::remove_var("OPENAI_API_KEY"),
+        }
+        match previous_openai_base {
+            Some(value) => std::env::set_var("OPENAI_BASE_URL", value),
+            None => std::env::remove_var("OPENAI_BASE_URL"),
+        }
+
+        assert_eq!(result.provider, "openai");
+        assert_eq!(result.model, "gpt-4.1-mini");
+        assert!(result
+            .payloads
+            .iter()
+            .any(|payload| payload.contains("mock-openai-ok")));
+    }
+
+    #[tokio::test]
+    async fn run_with_sdk_fails_when_configured_model_plugin_missing() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let fixture_root = unique_workspace();
+        let plugin_home = fixture_root.join("plugins");
+        let trust_policy = fixture_root.join("trusted_publishers.json");
+        seed_cli_plugin_for_tests(&plugin_home, &trust_policy);
+
+        let previous_plugin_home = std::env::var("KELVIN_PLUGIN_HOME").ok();
+        let previous_trust_policy = std::env::var("KELVIN_TRUST_POLICY_PATH").ok();
+        std::env::set_var("KELVIN_PLUGIN_HOME", plugin_home.as_os_str());
+        std::env::set_var("KELVIN_TRUST_POLICY_PATH", trust_policy.as_os_str());
+
+        let workspace = unique_workspace();
+        let mut config = KelvinSdkConfig::for_prompt("hello sdk");
+        config.workspace_dir = workspace;
+        config.timeout_ms = 5_000;
+        config.memory_mode = KelvinCliMemoryMode::Fallback;
+        config.load_installed_plugins = true;
+        config.model_provider = KelvinSdkModelSelection::InstalledPlugin {
+            plugin_id: "missing.model".to_string(),
+        };
+
+        let err = run_with_sdk(config)
+            .await
+            .expect_err("missing plugin should fail");
+
+        match previous_plugin_home {
+            Some(value) => std::env::set_var("KELVIN_PLUGIN_HOME", value),
+            None => std::env::remove_var("KELVIN_PLUGIN_HOME"),
+        }
+        match previous_trust_policy {
+            Some(value) => std::env::set_var("KELVIN_TRUST_POLICY_PATH", value),
+            None => std::env::remove_var("KELVIN_TRUST_POLICY_PATH"),
+        }
+
+        assert!(err.to_string().contains("configured model provider plugin"));
+    }
+
+    #[tokio::test]
+    async fn run_with_sdk_openai_plugin_requires_api_key() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let workspace = unique_workspace();
+        let plugin_home = workspace.join("plugins");
+        let trust_policy = workspace.join("trusted_publishers.json");
+        seed_cli_plugin_for_tests(&plugin_home, &trust_policy);
+
+        let base_url = "http://127.0.0.1:18080".to_string();
+        let allow_host = "127.0.0.1".to_string();
+        seed_openai_plugin_for_mock_host(&plugin_home, &trust_policy, &allow_host);
+
+        let previous_plugin_home = std::env::var("KELVIN_PLUGIN_HOME").ok();
+        let previous_trust_policy = std::env::var("KELVIN_TRUST_POLICY_PATH").ok();
+        let previous_openai_key = std::env::var("OPENAI_API_KEY").ok();
+        let previous_openai_base = std::env::var("OPENAI_BASE_URL").ok();
+        std::env::set_var("KELVIN_PLUGIN_HOME", plugin_home.as_os_str());
+        std::env::set_var("KELVIN_TRUST_POLICY_PATH", trust_policy.as_os_str());
+        std::env::remove_var("OPENAI_API_KEY");
+        std::env::set_var("OPENAI_BASE_URL", &base_url);
+
+        let mut config = KelvinSdkConfig::for_prompt("hello openai");
+        config.workspace_dir = workspace.clone();
+        config.timeout_ms = 5_000;
+        config.memory_mode = KelvinCliMemoryMode::Fallback;
+        config.load_installed_plugins = true;
+        config.model_provider = KelvinSdkModelSelection::InstalledPlugin {
+            plugin_id: "acme.openai".to_string(),
+        };
+
+        let err = run_with_sdk(config)
+            .await
+            .expect_err("missing OPENAI_API_KEY should fail");
+
+        match previous_plugin_home {
+            Some(value) => std::env::set_var("KELVIN_PLUGIN_HOME", value),
+            None => std::env::remove_var("KELVIN_PLUGIN_HOME"),
+        }
+        match previous_trust_policy {
+            Some(value) => std::env::set_var("KELVIN_TRUST_POLICY_PATH", value),
+            None => std::env::remove_var("KELVIN_TRUST_POLICY_PATH"),
+        }
+        match previous_openai_key {
+            Some(value) => std::env::set_var("OPENAI_API_KEY", value),
+            None => std::env::remove_var("OPENAI_API_KEY"),
+        }
+        match previous_openai_base {
+            Some(value) => std::env::set_var("OPENAI_BASE_URL", value),
+            None => std::env::remove_var("OPENAI_BASE_URL"),
+        }
+
+        assert!(err.to_string().contains("OPENAI_API_KEY"));
     }
 }

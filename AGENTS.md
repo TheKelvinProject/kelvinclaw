@@ -50,6 +50,10 @@ This file defines default expectations for coding agents working in this reposit
 
 - Only run tests/builds relevant to the change being made, but ensure all tests pass before finalizing.
 - Prefer Docker-based verification, remote server first if available, only fallback to local if needed.
+- Remote Docker preflight (required when using a vanilla `rust:*` image):
+    - `rustup component add rustfmt clippy`
+    - If missing: `cargo install cargo-audit --locked`
+    - If missing: `cargo install cargo-outdated --locked`
 - Standard SDK lane:
     - `scripts/test-sdk.sh`
 - Targeted Rust lane:
@@ -68,6 +72,7 @@ This file defines default expectations for coding agents working in this reposit
     - `scripts/test-e2e.sh`
 - Run Docker-based tests before finalizing:
     - `scripts/test-docker.sh`
+- If a referenced script is not present in the repo, report it as `MISSING` and continue with the remaining checks.
 
 ## Plugin Architecture Guardrails
 

@@ -351,7 +351,7 @@ impl MemoryService for MemoryController {
             Ok(response) => {
                 self.cache_response(
                     validated.request_id.clone(),
-                    CachedResponse::Upsert(response.clone()),
+                    CachedResponse::Upsert(response),
                 )
                 .await;
                 self.audit(
@@ -587,7 +587,7 @@ impl MemoryService for MemoryController {
             Ok(response) => {
                 self.cache_response(
                     validated.request_id.clone(),
-                    CachedResponse::Delete(response.clone()),
+                    CachedResponse::Delete(response),
                 )
                 .await;
                 self.audit(

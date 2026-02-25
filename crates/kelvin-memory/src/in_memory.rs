@@ -151,7 +151,7 @@ impl InMemoryVectorMemoryManager {
         (start + 1, end + 1, lines[start..=end].join("\n"))
     }
 
-    fn build_doc_map<'a>(docs: &'a [InMemoryDocument]) -> HashMap<&'a str, &'a InMemoryDocument> {
+    fn build_doc_map(docs: &[InMemoryDocument]) -> HashMap<&str, &InMemoryDocument> {
         docs.iter().map(|doc| (doc.path.as_str(), doc)).collect()
     }
 }

@@ -8,6 +8,9 @@ authors.workspace = true
 [dependencies]
 kelvin-core = { path = "../kelvin-core" }
 wasmtime.workspace = true
+serde_json.workspace = true
+reqwest.workspace = true
+url.workspace = true
 
 [dev-dependencies]
 wat = "1"

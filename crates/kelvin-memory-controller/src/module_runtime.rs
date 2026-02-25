@@ -192,28 +192,26 @@ impl LoadedMemoryModule {
 
 fn validate_memory_pages(bytes: &[u8], max_memory_pages: u32) -> KelvinResult<()> {
     for payload in Parser::new(0).parse_all(bytes) {
-        match payload.map_err(|err| KelvinError::InvalidInput(err.to_string()))? {
-            Payload::MemorySection(section) => {
-                for memory in section {
-                    let memory =
-                        memory.map_err(|err| KelvinError::InvalidInput(err.to_string()))?;
-                    if memory.initial > u64::from(max_memory_pages) {
+        if let Payload::MemorySection(section) =
+            payload.map_err(|err| KelvinError::InvalidInput(err.to_string()))?
+        {
+            for memory in section {
+                let memory = memory.map_err(|err| KelvinError::InvalidInput(err.to_string()))?;
+                if memory.initial > u64::from(max_memory_pages) {
+                    return Err(KelvinError::InvalidInput(format!(
+                        "module initial memory pages {} exceed limit {}",
+                        memory.initial, max_memory_pages
+                    )));
+                }
+                if let Some(maximum) = memory.maximum {
+                    if maximum > u64::from(max_memory_pages) {
                         return Err(KelvinError::InvalidInput(format!(
-                            "module initial memory pages {} exceed limit {}",
-                            memory.initial, max_memory_pages
+                            "module max memory pages {} exceed limit {}",
+                            maximum, max_memory_pages
                         )));
-                    }
-                    if let Some(maximum) = memory.maximum {
-                        if maximum > u64::from(max_memory_pages) {
-                            return Err(KelvinError::InvalidInput(format!(
-                                "module max memory pages {} exceed limit {}",
-                                maximum, max_memory_pages
-                            )));
-                        }
                     }
                 }
             }
-            _ => {}
         }
     }
     Ok(())

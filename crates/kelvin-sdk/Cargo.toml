@@ -21,3 +21,8 @@ kelvin-memory-client = { path = "../kelvin-memory-client", optional = true }
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
+base64.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+mockito = "1"
+wat = "1"
