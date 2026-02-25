@@ -63,3 +63,13 @@ Focus:
 
 - This is SDK-lane coverage, not full application/runtime governance.
 - Root-lane integrations remain outside SDK safety guarantees by design (`docs/ROOT_VS_SDK.md`).
+
+## Data Plane Extension
+
+Memory Controller NIST suite:
+
+- `crates/kelvin-memory-controller/tests/memory_controller_nist_ai_rmf_1_0.rs`
+
+This extends GOVERN/MAP/MEASURE/MANAGE coverage into the memory data plane
+with checks for profile governance, issuer/audience pinning, claim-to-request
+mapping, typed error observability, replay control, and timeout/resource limits.

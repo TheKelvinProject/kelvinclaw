@@ -52,3 +52,13 @@ Test suite:
 
 - These are SDK-lane controls, not full runtime/LLM behavior controls.
 - Root-lane integrations remain outside SDK trust guarantees by design (`docs/ROOT_VS_SDK.md`).
+
+## Data Plane Extension
+
+Memory Controller OWASP suite:
+
+- `crates/kelvin-memory-controller/tests/memory_controller_owasp_top10_ai_2025.rs`
+
+This adds OWASP-oriented checks for delegation-token misuse, context tampering,
+capability overreach, request bounds enforcement, provider-feature gating, and
+deterministic query ordering in the memory data plane.
