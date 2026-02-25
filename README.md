@@ -20,6 +20,7 @@ See:
 - [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md)
 - [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md)
 - [docs/trusted-executive-wasm.md](docs/trusted-executive-wasm.md)
+- [docs/RUST_DEVELOPER_QUICKSTART.md](docs/RUST_DEVELOPER_QUICKSTART.md)
 - [docs/memory-control-data-plane.md](docs/memory-control-data-plane.md)
 - [docs/memory-rpc-contract.md](docs/memory-rpc-contract.md)
 - [docs/memory-module-sdk.md](docs/memory-module-sdk.md)
@@ -100,6 +101,12 @@ The fallback manager mimics KelvinClaw's primary->fallback behavior.
 
 ```bash
 cargo run --manifest-path archive/kelvin-cli/Cargo.toml -- --prompt "hello" --workspace /path/to/workspace --memory fallback
+```
+
+Fastest dev try path:
+
+```bash
+scripts/try-kelvin.sh "hello kelvin"
 ```
 
 Tool-trigger pattern for the default model provider:
