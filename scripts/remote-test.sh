@@ -2,34 +2,81 @@
 set -euo pipefail
 
 HOST="${REMOTE_TEST_HOST:-}"
-REMOTE_DIR="~/kelvinclaw"
+REMOTE_DIR="${REMOTE_TEST_REMOTE_DIR:-~/kelvinclaw}"
 MODE="native"
 DO_SYNC="1"
 EXTRA_CARGO_ARGS=""
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
-# Load local .env defaults for convenience, but do not override an already-set
-# shell environment variable.
-if [[ -z "${REMOTE_TEST_HOST:-}" && -f "${ROOT_DIR}/.env" ]]; then
-  set -a
-  # shellcheck disable=SC1091
-  source "${ROOT_DIR}/.env"
-  set +a
-fi
+trim_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "${value}"
+}
+
+strip_wrapping_quotes() {
+  local value="$1"
+  if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
+    printf '%s' "${value:1:${#value}-2}"
+    return
+  fi
+  if [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
+    printf '%s' "${value:1:${#value}-2}"
+    return
+  fi
+  printf '%s' "${value}"
+}
+
+load_env_var_from_file() {
+  local key="$1"
+  local file="$2"
+  local line stripped value
+  [[ -f "${file}" ]] || return 1
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    stripped="$(trim_whitespace "${line%%#*}")"
+    [[ -z "${stripped}" ]] && continue
+    if [[ "${stripped}" =~ ^export[[:space:]]+ ]]; then
+      stripped="$(trim_whitespace "${stripped#export }")"
+    fi
+    if [[ "${stripped}" =~ ^${key}[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+      value="$(trim_whitespace "${BASH_REMATCH[1]}")"
+      strip_wrapping_quotes "${value}"
+      return 0
+    fi
+  done < "${file}"
+  return 1
+}
+
+# Load local .env defaults without executing the file as shell code.
+for env_file in "${ROOT_DIR}/.env.local" "${ROOT_DIR}/.env"; do
+  if [[ -z "${REMOTE_TEST_HOST:-}" ]]; then
+    if value="$(load_env_var_from_file "REMOTE_TEST_HOST" "${env_file}")"; then
+      REMOTE_TEST_HOST="${value}"
+    fi
+  fi
+  if [[ -z "${REMOTE_TEST_REMOTE_DIR:-}" ]]; then
+    if value="$(load_env_var_from_file "REMOTE_TEST_REMOTE_DIR" "${env_file}")"; then
+      REMOTE_TEST_REMOTE_DIR="${value}"
+    fi
+  fi
+done
 
 HOST="${HOST:-${REMOTE_TEST_HOST:-}}"
+REMOTE_DIR="${REMOTE_TEST_REMOTE_DIR:-${REMOTE_DIR}}"
 
 usage() {
   cat <<USAGE
 Usage: scripts/remote-test.sh [options]
 
 Sync this repository to a remote host over SSH and run Rust tests there.
-If REMOTE_TEST_HOST is not set in your shell, the script will read .env from
-the repository root.
+If REMOTE_TEST_HOST is not set in your shell, the script will read .env.local
+or .env from the repository root (keys only, no shell execution).
 
 Options:
   --host <host>            SSH host (default: \$REMOTE_TEST_HOST)
-  --remote-dir <path>      Remote project dir (default: ${REMOTE_DIR})
+  --remote-dir <path>      Remote project dir (default: \$REMOTE_TEST_REMOTE_DIR or ${REMOTE_DIR})
   --mode <native|docker>   Test mode (default: ${MODE})
   --docker                 Shortcut for --mode docker
   --native                 Shortcut for --mode native
@@ -39,6 +86,7 @@ Options:
 
 Examples:
   REMOTE_TEST_HOST=your-host scripts/remote-test.sh
+  REMOTE_TEST_REMOTE_DIR=~/work/kelvinclaw scripts/remote-test.sh --native
   scripts/remote-test.sh --docker
   scripts/remote-test.sh --host ec2-user@your-host --cargo-args '-- --nocapture'
 USAGE
@@ -92,7 +140,12 @@ if [[ "${MODE}" != "native" && "${MODE}" != "docker" ]]; then
 fi
 
 if [[ -z "${HOST}" ]]; then
-  echo "Missing remote host. Pass --host <host> or set REMOTE_TEST_HOST." >&2
+  cat >&2 <<MSG
+Missing remote host. Pass --host <host> or set REMOTE_TEST_HOST.
+Tip:
+  cp .env.example .env
+  # then set REMOTE_TEST_HOST in .env
+MSG
   exit 1
 fi
 

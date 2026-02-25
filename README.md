@@ -99,21 +99,32 @@ Tool-trigger pattern for the default model provider:
 [[tool:hello_tool {"foo":"bar"}]]
 ```
 
-## Remote EC2 Build/Test
+## Optional: Remote Build/Test
 
-One-command sync + remote test runner:
+Remote testing is optional. Public clones can run local Docker tests without any private host setup.
+
+Privacy-conscious remote setup:
 
 ```bash
-scripts/remote-test.sh
+cp .env.example .env
+$EDITOR .env
+scripts/remote-test.sh --docker
 ```
 
 Useful variants:
 
 ```bash
-REMOTE_TEST_HOST=ec2-user@your-host scripts/remote-test.sh
+REMOTE_TEST_HOST=your-user@your-host scripts/remote-test.sh
+REMOTE_TEST_REMOTE_DIR=~/work/kelvinclaw scripts/remote-test.sh --native
 scripts/remote-test.sh --docker
-scripts/remote-test.sh --host ec2-user@your-host --cargo-args '-- --nocapture'
+scripts/remote-test.sh --host your-user@your-host --cargo-args '-- --nocapture'
 ```
+
+Notes:
+
+- `.env` and `.env.local` are gitignored; keep personal hosts/IPs there only.
+- `scripts/remote-test.sh` reads only `REMOTE_TEST_HOST` and `REMOTE_TEST_REMOTE_DIR` from `.env`/`.env.local`.
+- `.env` files are parsed as key/value data and are not executed as shell code.
 
 ## Local Test
 
