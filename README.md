@@ -14,6 +14,7 @@ See:
 - [docs/KELVIN_CORE_SDK.md](docs/KELVIN_CORE_SDK.md)
 - [docs/SDK_TEST_MATRIX.md](docs/SDK_TEST_MATRIX.md)
 - [docs/SDK_OWASP_TOP10_AI_2025.md](docs/SDK_OWASP_TOP10_AI_2025.md)
+- [docs/SDK_NIST_AI_RMF_1_0.md](docs/SDK_NIST_AI_RMF_1_0.md)
 - [docs/ROOT_VS_SDK.md](docs/ROOT_VS_SDK.md)
 - [docs/CORE_ADMISSION_POLICY.md](docs/CORE_ADMISSION_POLICY.md)
 - [docs/SDK_PRINCIPLES.md](docs/SDK_PRINCIPLES.md)

@@ -101,6 +101,7 @@ Detailed security/stability test coverage matrix:
 
 - `docs/SDK_TEST_MATRIX.md`
 - `docs/SDK_OWASP_TOP10_AI_2025.md`
+- `docs/SDK_NIST_AI_RMF_1_0.md`
 - `docs/ROOT_VS_SDK.md`
 
 SDK certification command:

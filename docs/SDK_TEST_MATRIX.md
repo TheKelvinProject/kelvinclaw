@@ -33,4 +33,6 @@ This matrix keeps Kelvin Core SDK verification focused on security, stability, a
 - `crates/kelvin-core/src/sdk.rs` unit tests
 - `crates/kelvin-core/tests/sdk_security_stability.rs` integration tests
 - `crates/kelvin-core/tests/sdk_owasp_top10_ai_2025.rs` OWASP Top 10 AI stress suite
+- `crates/kelvin-core/tests/sdk_nist_ai_rmf_1_0.rs` NIST AI RMF 1.0 suite
 - `docs/SDK_OWASP_TOP10_AI_2025.md` category-to-test mapping
+- `docs/SDK_NIST_AI_RMF_1_0.md` function-to-test mapping

@@ -7,5 +7,6 @@ cd "${ROOT_DIR}"
 echo "[test-sdk] running Kelvin Core SDK tests"
 cargo test -p kelvin-core --test sdk_security_stability
 cargo test -p kelvin-core --test sdk_owasp_top10_ai_2025
+cargo test -p kelvin-core --test sdk_nist_ai_rmf_1_0
 cargo test -p kelvin-core sdk::tests
 echo "[test-sdk] success"
