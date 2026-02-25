@@ -1,0 +1,11 @@
+.git
+.github
+target
+**/target
+.env
+.env.local
+.bench
+.kelvin
+local_docs
+.cache
+.DS_Store

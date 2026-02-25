@@ -12,7 +12,7 @@ scripts/try-kelvin.sh "hello kelvin"
 What this does:
 
 - uses local `cargo` if installed
-- otherwise falls back to Docker (`rust:latest`)
+- otherwise falls back to Docker (`rust:1.93.1-bookworm` by default)
 - installs/updates the first-party `kelvin_cli` WASM plugin package into `./.kelvin/plugins`
 - runs `apps/kelvin-host` with a prompt
 
@@ -49,6 +49,13 @@ SDK suites:
 ```bash
 scripts/test-sdk.sh
 scripts/test-cli-plugin-integration.sh
+scripts/test-docker.sh
+```
+
+Before final pushes:
+
+```bash
+scripts/test-docker.sh --final
 ```
 
 Memory controller OWASP + NIST suites:
