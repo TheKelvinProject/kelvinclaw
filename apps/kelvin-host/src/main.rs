@@ -1,7 +1,8 @@
 use std::env;
 use std::path::PathBuf;
 
-use kelvin_sdk::{run_with_sdk, KelvinCliMemoryMode, KelvinSdkConfig};
+use kelvin_core::PluginSecurityPolicy;
+use kelvin_sdk::{run_with_sdk, KelvinCliMemoryMode, KelvinSdkConfig, KelvinSdkModelSelection};
 
 #[derive(Debug, Clone)]
 struct CliConfig {
@@ -11,10 +12,11 @@ struct CliConfig {
     memory_mode: KelvinCliMemoryMode,
     timeout_ms: u64,
     system_prompt: Option<String>,
+    model_provider_plugin_id: Option<String>,
 }
 
 fn usage() -> &'static str {
-    "Usage: kelvin-host --prompt <text> [--session <id>] [--workspace <dir>] [--memory markdown|in-memory|fallback] [--timeout-ms <ms>]"
+    "Usage: kelvin-host --prompt <text> [--session <id>] [--workspace <dir>] [--memory markdown|in-memory|fallback] [--timeout-ms <ms>] [--model-provider <plugin_id>]"
 }
 
 fn parse_args() -> Result<CliConfig, String> {
@@ -24,6 +26,7 @@ fn parse_args() -> Result<CliConfig, String> {
     let mut memory_mode = KelvinCliMemoryMode::Markdown;
     let mut timeout_ms = 30_000_u64;
     let mut system_prompt: Option<String> = None;
+    let mut model_provider_plugin_id: Option<String> = None;
 
     let mut args = env::args().skip(1).peekable();
     while let Some(arg) = args.next() {
@@ -66,6 +69,16 @@ fn parse_args() -> Result<CliConfig, String> {
                     .ok_or_else(|| "missing value for --system".to_string())?;
                 system_prompt = Some(value);
             }
+            "--model-provider" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --model-provider".to_string())?;
+                let trimmed = value.trim();
+                if trimmed.is_empty() {
+                    return Err("model provider id must not be empty".to_string());
+                }
+                model_provider_plugin_id = Some(trimmed.to_string());
+            }
             other if !other.starts_with('-') && prompt.is_none() => {
                 prompt = Some(other.to_string());
             }
@@ -84,6 +97,7 @@ fn parse_args() -> Result<CliConfig, String> {
         memory_mode,
         timeout_ms,
         system_prompt,
+        model_provider_plugin_id,
     })
 }
 
@@ -91,6 +105,22 @@ fn parse_args() -> Result<CliConfig, String> {
 async fn main() {
     match parse_args() {
         Ok(config) => {
+            let (model_provider, plugin_security_policy) =
+                if let Some(plugin_id) = config.model_provider_plugin_id.clone() {
+                    (
+                        KelvinSdkModelSelection::InstalledPlugin { plugin_id },
+                        PluginSecurityPolicy {
+                            allow_network_egress: true,
+                            ..Default::default()
+                        },
+                    )
+                } else {
+                    (
+                        KelvinSdkModelSelection::Echo,
+                        PluginSecurityPolicy::default(),
+                    )
+                };
+
             let result = run_with_sdk(KelvinSdkConfig {
                 prompt: config.prompt,
                 session_id: config.session_id,
@@ -99,8 +129,9 @@ async fn main() {
                 timeout_ms: config.timeout_ms,
                 system_prompt: config.system_prompt,
                 core_version: "0.1.0".to_string(),
-                plugin_security_policy: Default::default(),
+                plugin_security_policy,
                 load_installed_plugins: true,
+                model_provider,
             })
             .await;
 
@@ -120,6 +151,11 @@ async fn main() {
                     if err.to_string().contains("kelvin_cli") {
                         eprintln!(
                             "hint: install the bundled CLI plugin with scripts/install-kelvin-cli-plugin.sh"
+                        );
+                    }
+                    if err.to_string().contains("OPENAI_API_KEY") {
+                        eprintln!(
+                            "hint: set OPENAI_API_KEY and install the OpenAI model plugin with scripts/install-kelvin-openai-plugin.sh"
                         );
                     }
                     std::process::exit(1);

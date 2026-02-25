@@ -7,6 +7,7 @@ authors.workspace = true
 
 [dependencies]
 tokio.workspace = true
+kelvin-core = { path = "../../crates/kelvin-core" }
 kelvin-sdk = { path = "../../crates/kelvin-sdk", default-features = false }
 
 [features]

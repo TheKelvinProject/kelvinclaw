@@ -222,25 +222,13 @@ fn preview(value: &str, max_chars: usize) -> String {
     shown
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Default)]
 pub struct PluginSecurityPolicy {
     pub allow_experimental: bool,
     pub allow_fs_read: bool,
     pub allow_network_egress: bool,
     pub allow_fs_write: bool,
     pub allow_command_execution: bool,
-}
-
-impl Default for PluginSecurityPolicy {
-    fn default() -> Self {
-        Self {
-            allow_experimental: false,
-            allow_fs_read: false,
-            allow_network_egress: false,
-            allow_fs_write: false,
-            allow_command_execution: false,
-        }
-    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -541,18 +529,114 @@ impl ToolRegistry for SdkToolRegistry {
     }
 }
 
+pub struct SdkModelProviderRegistry {
+    by_plugin_id: HashMap<String, Arc<dyn ModelProvider>>,
+    by_provider_model: HashMap<String, Arc<dyn ModelProvider>>,
+}
+
+impl SdkModelProviderRegistry {
+    pub fn from_plugin_registry(registry: &dyn PluginRegistry) -> KelvinResult<Self> {
+        let mut by_plugin_id = HashMap::new();
+        let mut by_provider_model = HashMap::new();
+        let mut manifests = registry.manifests();
+        manifests.sort_by(|left, right| left.id.cmp(&right.id));
+
+        for manifest in manifests {
+            let plugin = registry.get(&manifest.id).ok_or_else(|| {
+                KelvinError::NotFound(format!(
+                    "plugin '{}' disappeared during model registry build",
+                    manifest.id
+                ))
+            })?;
+
+            let declared_model_provider = manifest
+                .capabilities
+                .contains(&PluginCapability::ModelProvider);
+            let provided_model = plugin.model_provider();
+
+            match (declared_model_provider, provided_model) {
+                (false, None) => {}
+                (false, Some(_)) => {
+                    return Err(KelvinError::InvalidInput(format!(
+                        "plugin '{}' exposes a model provider but is missing '{}' capability",
+                        manifest.id, "model_provider"
+                    )));
+                }
+                (true, None) => {
+                    return Err(KelvinError::InvalidInput(format!(
+                        "plugin '{}' declares model provider capability but returned no model provider",
+                        manifest.id
+                    )));
+                }
+                (true, Some(model)) => {
+                    let provider_name = model.provider_name().trim();
+                    let model_name = model.model_name().trim();
+                    if provider_name.is_empty() {
+                        return Err(KelvinError::InvalidInput(format!(
+                            "plugin '{}' returned a model provider with empty provider_name",
+                            manifest.id
+                        )));
+                    }
+                    if model_name.is_empty() {
+                        return Err(KelvinError::InvalidInput(format!(
+                            "plugin '{}' returned a model provider with empty model_name",
+                            manifest.id
+                        )));
+                    }
+                    let provider_model_key = format!("{provider_name}::{model_name}");
+                    if by_provider_model.contains_key(&provider_model_key) {
+                        return Err(KelvinError::InvalidInput(format!(
+                            "duplicate model provider name from plugins: {provider_model_key}"
+                        )));
+                    }
+
+                    by_plugin_id.insert(manifest.id.clone(), model.clone());
+                    by_provider_model.insert(provider_model_key, model);
+                }
+            }
+        }
+
+        Ok(Self {
+            by_plugin_id,
+            by_provider_model,
+        })
+    }
+
+    pub fn get_by_plugin_id(&self, plugin_id: &str) -> Option<Arc<dyn ModelProvider>> {
+        self.by_plugin_id.get(plugin_id).cloned()
+    }
+
+    pub fn get_by_provider_model(
+        &self,
+        provider_name: &str,
+        model_name: &str,
+    ) -> Option<Arc<dyn ModelProvider>> {
+        let key = format!("{}::{}", provider_name.trim(), model_name.trim());
+        self.by_provider_model.get(&key).cloned()
+    }
+
+    pub fn plugin_ids(&self) -> Vec<String> {
+        let mut ids = self.by_plugin_id.keys().cloned().collect::<Vec<_>>();
+        ids.sort();
+        ids
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Arc;
 
     use serde_json::json;
 
-    use crate::{KelvinResult, Tool, ToolCallInput, ToolCallResult, ToolRegistry};
+    use crate::{
+        KelvinResult, ModelInput, ModelOutput, ModelProvider, Tool, ToolCallInput, ToolCallResult,
+        ToolRegistry,
+    };
 
     use super::{
         check_plugin_compatibility, InMemoryPluginRegistry, PluginCapability, PluginFactory,
-        PluginManifest, PluginRegistry, PluginSecurityPolicy, SdkToolRegistry,
-        KELVIN_CORE_API_VERSION,
+        PluginManifest, PluginRegistry, PluginSecurityPolicy, SdkModelProviderRegistry,
+        SdkToolRegistry, KELVIN_CORE_API_VERSION,
     };
 
     fn test_manifest() -> PluginManifest {
@@ -623,6 +707,70 @@ mod tests {
 
         fn tool(&self) -> Option<Arc<dyn Tool>> {
             Some(Arc::new(EchoTool))
+        }
+    }
+
+    #[derive(Clone)]
+    struct StaticModelProvider {
+        provider_name: String,
+        model_name: String,
+    }
+
+    impl StaticModelProvider {
+        fn new(provider_name: &str, model_name: &str) -> Self {
+            Self {
+                provider_name: provider_name.to_string(),
+                model_name: model_name.to_string(),
+            }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ModelProvider for StaticModelProvider {
+        fn provider_name(&self) -> &str {
+            &self.provider_name
+        }
+
+        fn model_name(&self) -> &str {
+            &self.model_name
+        }
+
+        async fn infer(&self, _input: ModelInput) -> KelvinResult<ModelOutput> {
+            Ok(ModelOutput {
+                assistant_text: "ok".to_string(),
+                stop_reason: Some("completed".to_string()),
+                tool_calls: Vec::new(),
+                usage: None,
+            })
+        }
+    }
+
+    struct StaticModelPlugin {
+        manifest: PluginManifest,
+        provider_name: String,
+        model_name: String,
+    }
+
+    impl PluginFactory for StaticModelPlugin {
+        fn manifest(&self) -> &PluginManifest {
+            &self.manifest
+        }
+
+        fn model_provider(&self) -> Option<Arc<dyn ModelProvider>> {
+            Some(Arc::new(StaticModelProvider::new(
+                &self.provider_name,
+                &self.model_name,
+            )))
+        }
+    }
+
+    struct EmptyModelPlugin {
+        manifest: PluginManifest,
+    }
+
+    impl PluginFactory for EmptyModelPlugin {
+        fn manifest(&self) -> &PluginManifest {
+            &self.manifest
         }
     }
 
@@ -763,5 +911,111 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.to_string().contains("duplicate tool name"));
+    }
+
+    #[test]
+    fn sdk_model_registry_builds_from_registered_plugins() {
+        let registry = InMemoryPluginRegistry::new();
+        let plugin = Arc::new(StaticModelPlugin {
+            manifest: PluginManifest {
+                id: "acme.model".to_string(),
+                capabilities: vec![PluginCapability::ModelProvider],
+                ..test_manifest()
+            },
+            provider_name: "openai".to_string(),
+            model_name: "gpt-4.1-mini".to_string(),
+        });
+        registry
+            .register(plugin, "0.1.0", &PluginSecurityPolicy::default())
+            .expect("register");
+
+        let models = SdkModelProviderRegistry::from_plugin_registry(&registry).expect("build");
+        assert_eq!(models.plugin_ids(), vec!["acme.model".to_string()]);
+        assert!(models.get_by_plugin_id("acme.model").is_some());
+        assert!(models
+            .get_by_provider_model("openai", "gpt-4.1-mini")
+            .is_some());
+    }
+
+    #[test]
+    fn sdk_model_registry_rejects_missing_model_implementation() {
+        let registry = InMemoryPluginRegistry::new();
+        let plugin = Arc::new(EmptyModelPlugin {
+            manifest: PluginManifest {
+                id: "acme.model".to_string(),
+                capabilities: vec![PluginCapability::ModelProvider],
+                ..test_manifest()
+            },
+        });
+        registry
+            .register(plugin, "0.1.0", &PluginSecurityPolicy::default())
+            .expect("register");
+
+        let err = match SdkModelProviderRegistry::from_plugin_registry(&registry) {
+            Ok(_) => panic!("missing model implementation should fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("returned no model provider"));
+    }
+
+    #[test]
+    fn sdk_model_registry_rejects_model_without_capability() {
+        let registry = InMemoryPluginRegistry::new();
+        let plugin = Arc::new(StaticModelPlugin {
+            manifest: PluginManifest {
+                id: "acme.model".to_string(),
+                capabilities: vec![PluginCapability::ToolProvider],
+                ..test_manifest()
+            },
+            provider_name: "openai".to_string(),
+            model_name: "gpt-4.1-mini".to_string(),
+        });
+        registry
+            .register(plugin, "0.1.0", &PluginSecurityPolicy::default())
+            .expect("register");
+
+        let err = match SdkModelProviderRegistry::from_plugin_registry(&registry) {
+            Ok(_) => panic!("model provider without capability should fail"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("missing 'model_provider' capability"));
+    }
+
+    #[test]
+    fn sdk_model_registry_rejects_duplicate_provider_model_names() {
+        let registry = InMemoryPluginRegistry::new();
+        let first = Arc::new(StaticModelPlugin {
+            manifest: PluginManifest {
+                id: "acme.model.first".to_string(),
+                capabilities: vec![PluginCapability::ModelProvider],
+                ..test_manifest()
+            },
+            provider_name: "openai".to_string(),
+            model_name: "gpt-4.1-mini".to_string(),
+        });
+        let second = Arc::new(StaticModelPlugin {
+            manifest: PluginManifest {
+                id: "acme.model.second".to_string(),
+                capabilities: vec![PluginCapability::ModelProvider],
+                ..test_manifest()
+            },
+            provider_name: "openai".to_string(),
+            model_name: "gpt-4.1-mini".to_string(),
+        });
+
+        registry
+            .register(first, "0.1.0", &PluginSecurityPolicy::default())
+            .expect("register first");
+        registry
+            .register(second, "0.1.0", &PluginSecurityPolicy::default())
+            .expect("register second");
+
+        let err = match SdkModelProviderRegistry::from_plugin_registry(&registry) {
+            Ok(_) => panic!("duplicate model providers should fail"),
+            Err(err) => err,
+        };
+        assert!(err.to_string().contains("duplicate model provider name"));
     }
 }

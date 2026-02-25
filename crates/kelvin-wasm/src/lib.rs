@@ -4,6 +4,12 @@ use std::path::Path;
 use kelvin_core::{KelvinError, KelvinResult};
 use wasmtime::{Caller, Config, Engine, Linker, Module, Store};
 
+pub mod model_host;
+pub use model_host::{
+    model_abi, EnvOpenAiResponsesTransport, ModelSandboxPolicy, OpenAiResponsesTransport,
+    WasmModelHost,
+};
+
 pub mod claw_abi {
     pub const ABI_VERSION: &str = "1.0.0";
     pub const MODULE: &str = "claw";

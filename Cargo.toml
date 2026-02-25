@@ -39,3 +39,5 @@ protoc-bin-vendored = "3"
 jsonwebtoken = "9"
 uuid = { version = "1", features = ["v4", "serde"] }
 wasmparser = "0.226"
+reqwest = { version = "0.12", default-features = false, features = ["blocking", "json", "rustls-tls"] }
+url = "2"

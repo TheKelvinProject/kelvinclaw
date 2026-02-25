@@ -4,6 +4,10 @@
     {
       "id": "kelvin",
       "ed25519_public_key": "7QDs32EXdj1wWtCR3Jllpf5wk6p0WEuD6un29Q+NpJk="
+    },
+    {
+      "id": "kelvin_openai",
+      "ed25519_public_key": "fCkMIqSzlMxjCRKDXYtNiowf8ZUmapz3GfTCDe7sxeY="
     }
   ]
 }

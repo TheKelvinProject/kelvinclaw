@@ -57,6 +57,8 @@ See:
 - [docs/memory-rpc-contract.md](docs/memory-rpc-contract.md)
 - [docs/memory-module-sdk.md](docs/memory-module-sdk.md)
 - [docs/memory-controller-deployment-profiles.md](docs/memory-controller-deployment-profiles.md)
+- [docs/model-plugin-abi.md](docs/model-plugin-abi.md)
+- [docs/openai-plugin-install-and-run.md](docs/openai-plugin-install-and-run.md)
 
 Workspace crates:
 
@@ -95,7 +97,9 @@ The runtime integrates through the Kelvin Core SDK path:
 - `WasmSkillPlugin` (plugin manifest + tool factory)
 - `InMemoryPluginRegistry` (policy-gated registration)
 - `SdkToolRegistry` (validated tool projection for runtime wiring)
+- `SdkModelProviderRegistry` (validated model-provider projection)
 - `kelvin_cli` (CLI plugin executed before each run)
+- `kelvin.openai` (first-party OpenAI model plugin, optional)
 
 ## Trusted Executive + Untrusted Skills
 
@@ -103,7 +107,7 @@ Kelvin now supports the split model:
 
 - trusted native Rust host (`kelvin-wasm`) with system keys
 - untrusted WASM skills loaded at runtime
-- explicit host ABI (`claw::*` imports) for what skills may request
+- explicit host ABIs (`claw::*` for tools, `kelvin_model_host_v1` for model providers)
 - sandbox policy gates that deny disallowed capabilities at module instantiation
 
 Key types in `kelvin-wasm`:
@@ -118,6 +122,10 @@ Run a `.wasm` skill with the native executive:
 ```bash
 cargo run -p kelvin-wasm --bin kelvin-wasm-runner -- --wasm path/to/skill.wasm --policy-preset locked_down
 ```
+
+Model-provider ABI reference:
+
+- [docs/model-plugin-abi.md](docs/model-plugin-abi.md)
 
 ## Memory Backend Swapping
 
@@ -136,6 +144,16 @@ scripts/install-kelvin-cli-plugin.sh
 KELVIN_PLUGIN_HOME=.kelvin/plugins \
 KELVIN_TRUST_POLICY_PATH=.kelvin/trusted_publishers.json \
 CARGO_TARGET_DIR=target/try-kelvin-cli cargo run -p kelvin-host -- --prompt "hello" --workspace /path/to/workspace --memory fallback
+```
+
+OpenAI provider path:
+
+```bash
+scripts/install-kelvin-openai-plugin.sh
+OPENAI_API_KEY=<your_key> \
+KELVIN_PLUGIN_HOME=.kelvin/plugins \
+KELVIN_TRUST_POLICY_PATH=.kelvin/trusted_publishers.json \
+CARGO_TARGET_DIR=target/try-kelvin-cli cargo run -p kelvin-host -- --prompt "hello" --model-provider kelvin.openai --workspace /path/to/workspace --memory fallback
 ```
 
 The CLI executable is only a thin launcher. Runtime behavior is composed in `kelvin-sdk`, and
@@ -219,17 +237,20 @@ scripts/test-cli-plugin-integration.sh
 
 ## Installed Plugin Runtime (Secure Loader)
 
-`kelvin-brain` can load installed SDK plugin packages and project them into runtime tools with policy enforcement:
+`kelvin-brain` can load installed SDK plugin packages and project them into runtime tool/model providers with policy enforcement:
 
 - signed manifest verification (`plugin.sig`, Ed25519 trusted publishers)
 - manifest integrity validation (`entrypoint_sha256`)
 - capability scopes (`fs_read_paths`, `network_allow_hosts`)
 - operational controls (timeout, retries, rate limit, circuit breaker)
+- runtime kind checks (`wasm_tool_v1`, `wasm_model_v1`)
+- model-plugin import allowlist checks (`kelvin_model_host_v1` imports only)
 
 Source: `crates/kelvin-brain/src/installed_plugins.rs`
 
 Default boot helpers:
 
+- `load_installed_plugins_default(core_version, security_policy)`
 - `load_installed_tool_plugins_default(core_version, security_policy)`
 - `default_plugin_home()`
 - `default_trust_policy_path()`
@@ -258,7 +279,7 @@ Trust policy template:
 Host boot behavior:
 
 - `apps/kelvin-host` calls `kelvin_sdk::run_with_sdk(...)` only.
-- `kelvin-sdk` requires installed `kelvin_cli` and auto-loads installed SDK plugins with `load_installed_tool_plugins_default(...)`.
+- `kelvin-sdk` requires installed `kelvin_cli` and auto-loads installed SDK plugins with `load_installed_plugins_default(...)`.
 
 ## Local Test
 

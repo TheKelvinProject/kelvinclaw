@@ -70,6 +70,12 @@ Source: `crates/kelvin-core/src/sdk.rs`
 - duplicate-tool-name rejection
 - capability/implementation consistency checks (`tool_provider` capability must match actual tool export)
 
+`SdkModelProviderRegistry` provides:
+
+- fail-fast projection from plugin metadata to runtime `ModelProvider` wiring
+- duplicate `provider_name::model_name` rejection
+- capability/implementation consistency checks (`model_provider` capability must match actual provider export)
+
 Source: `crates/kelvin-core/src/sdk.rs`
 
 ## 7. Conformance Tests
@@ -123,6 +129,8 @@ scripts/test-sdk.sh
 Primary API:
 
 - `InstalledPluginLoaderConfig`
+- `load_installed_plugins(...)`
+- `load_installed_plugins_default(...)`
 - `load_installed_tool_plugins(...)`
 - `load_installed_tool_plugins_default(...)`
 - `default_plugin_home()`
