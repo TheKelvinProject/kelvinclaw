@@ -20,3 +20,4 @@ local_docs/*
 skills/*/Cargo.lock
 .devcontainer/*
 .kelvin/
+.bench/
