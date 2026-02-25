@@ -2,8 +2,10 @@ use std::env;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use kelvin_brain::{EchoModelProvider, KelvinBrain};
-use kelvin_core::{now_ms, AgentRunRequest, KelvinError, KelvinResult};
+use kelvin_brain::{load_installed_tool_plugins_default, EchoModelProvider, KelvinBrain};
+use kelvin_core::{
+    now_ms, AgentRunRequest, KelvinError, KelvinResult, PluginSecurityPolicy, ToolRegistry,
+};
 use kelvin_memory::{MemoryBackendKind, MemoryFactory};
 use kelvin_runtime::{
     AgentRuntime, HashMapToolRegistry, InMemorySessionStore, LaneScheduler, RunOutcome,
@@ -22,6 +24,33 @@ struct CliConfig {
 
 fn usage() -> &'static str {
     "Usage: kelvin-cli --prompt <text> [--session <id>] [--workspace <dir>] [--memory markdown|in-memory|fallback] [--timeout-ms <ms>]"
+}
+
+struct CombinedToolRegistry {
+    installed: Arc<dyn ToolRegistry>,
+    builtins: Arc<dyn ToolRegistry>,
+}
+
+impl CombinedToolRegistry {
+    fn new(installed: Arc<dyn ToolRegistry>, builtins: Arc<dyn ToolRegistry>) -> Self {
+        Self { installed, builtins }
+    }
+}
+
+impl ToolRegistry for CombinedToolRegistry {
+    fn get(&self, name: &str) -> Option<Arc<dyn kelvin_core::Tool>> {
+        self.installed
+            .get(name)
+            .or_else(|| self.builtins.get(name))
+    }
+
+    fn names(&self) -> Vec<String> {
+        let mut names = self.installed.names();
+        names.extend(self.builtins.names());
+        names.sort();
+        names.dedup();
+        names
+    }
 }
 
 fn parse_args() -> Result<CliConfig, String> {
@@ -98,11 +127,21 @@ async fn run(config: CliConfig) -> KelvinResult<()> {
     let session_store = Arc::new(InMemorySessionStore::default());
     let event_sink = Arc::new(StdoutEventSink);
 
-    let tools = Arc::new(HashMapToolRegistry::new());
-    tools.register(TimeTool);
-    tools.register(StaticTextTool::new(
+    let builtin_tools = Arc::new(HashMapToolRegistry::new());
+    builtin_tools.register(TimeTool);
+    builtin_tools.register(StaticTextTool::new(
         "hello_tool",
         "Hello from a pluggable tool implementation.",
+    ));
+    let loaded = load_installed_tool_plugins_default("0.1.0", PluginSecurityPolicy::default())?;
+    println!(
+        "loaded installed plugins: {}",
+        loaded.loaded_plugins.len()
+    );
+
+    let tools: Arc<dyn ToolRegistry> = Arc::new(CombinedToolRegistry::new(
+        loaded.tool_registry,
+        builtin_tools,
     ));
 
     let memory = MemoryFactory::build(&config.workspace_dir, config.memory_backend);

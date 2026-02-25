@@ -194,6 +194,10 @@ Trust policy template:
 
 - `trusted_publishers.example.json`
 
+Archived CLI boot behavior:
+
+- `archive/kelvin-cli` now auto-loads installed SDK plugins with `load_installed_tool_plugins_default(...)` and keeps built-in tools as fallback.
+
 ## Local Test
 
 ```bash
