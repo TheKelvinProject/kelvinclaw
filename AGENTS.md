@@ -54,6 +54,9 @@ This file defines default expectations for coding agents working in this reposit
     - `rustup component add rustfmt clippy`
     - If missing: `cargo install cargo-audit --locked`
     - If missing: `cargo install cargo-outdated --locked`
+- Docker cache policy:
+    - Iteration/testing: use cached layers (`scripts/test-docker.sh`).
+    - Final push validation: run a clean rebuild from zero (`scripts/test-docker.sh --final`).
 - Standard SDK lane:
     - `scripts/test-sdk.sh`
 - Targeted Rust lane:

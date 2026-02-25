@@ -8,6 +8,7 @@ MODE="${KELVIN_TRY_MODE:-auto}" # auto | local | docker
 TARGET_DIR="${KELVIN_TRY_TARGET_DIR:-${ROOT_DIR}/target/try-kelvin-cli}"
 PLUGIN_HOME="${KELVIN_PLUGIN_HOME:-${ROOT_DIR}/.kelvin/plugins}"
 TRUST_POLICY_PATH="${KELVIN_TRUST_POLICY_PATH:-${ROOT_DIR}/.kelvin/trusted_publishers.json}"
+DOCKER_IMAGE="${KELVIN_TRY_DOCKER_IMAGE:-rust:1.93.1-bookworm}"
 
 ensure_cli_plugin() {
   echo "[try-kelvin] ensuring kelvin_cli WASM plugin is installed"
@@ -26,7 +27,7 @@ ensure_cli_plugin_docker() {
     -e KELVIN_TRUST_POLICY_PATH="/work/.kelvin/trusted_publishers.json" \
     -v "${ROOT_DIR}:/work" \
     -w /work \
-    rust:latest \
+    "${DOCKER_IMAGE}" \
     bash -lc '
       set -euo pipefail
       if ! command -v jq >/dev/null 2>&1; then
@@ -62,7 +63,7 @@ run_docker() {
     -e KELVIN_TRUST_POLICY_PATH="/work/.kelvin/trusted_publishers.json" \
     -v "${ROOT_DIR}:/work" \
     -w /work \
-    rust:latest \
+    "${DOCKER_IMAGE}" \
     bash -lc 'export PATH=/usr/local/cargo/bin:$PATH && CARGO_TARGET_DIR="$KELVIN_TRY_TARGET_DIR" cargo run -p kelvin-host -- --prompt "$KELVIN_TRY_PROMPT" --timeout-ms "$KELVIN_TRY_TIMEOUT_MS"'
 }
 

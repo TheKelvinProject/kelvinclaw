@@ -21,3 +21,4 @@ skills/*/Cargo.lock
 .devcontainer/*
 .kelvin/
 .bench/
+.cache/docker/

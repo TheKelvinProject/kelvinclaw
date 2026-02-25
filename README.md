@@ -296,7 +296,13 @@ scripts/test-sdk.sh
 Docker:
 
 ```bash
-docker run --rm -v "$PWD:/work" -w /work rust:latest cargo test --workspace
+scripts/test-docker.sh
+```
+
+Clean rebuild from zero (recommended before final pushes):
+
+```bash
+scripts/test-docker.sh --final
 ```
 
 Build the sample Rust WASM skill:

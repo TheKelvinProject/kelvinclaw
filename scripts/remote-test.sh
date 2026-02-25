@@ -3,11 +3,21 @@ set -euo pipefail
 
 HOST="${REMOTE_TEST_HOST:-}"
 REMOTE_DIR="${REMOTE_TEST_REMOTE_DIR:-~/kelvinclaw}"
-DOCKER_IMAGE="${REMOTE_TEST_DOCKER_IMAGE:-rust:latest}"
+DOCKER_IMAGE="${REMOTE_TEST_DOCKER_IMAGE:-rust:1.93.1-bookworm}"
 MODE="native"
 DO_SYNC="1"
 EXTRA_CARGO_ARGS=""
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SYNC_EXCLUDES=(
+  ".git"
+  "target"
+  ".DS_Store"
+  ".bench"
+  ".cache"
+  ".kelvin"
+  ".env"
+  ".env.local"
+)
 
 require_cmd() {
   local name="$1"
@@ -113,7 +123,7 @@ Options:
 Examples:
   REMOTE_TEST_HOST=your-host scripts/remote-test.sh
   REMOTE_TEST_REMOTE_DIR=~/work/kelvinclaw scripts/remote-test.sh --native
-  REMOTE_TEST_DOCKER_IMAGE=rust:latest scripts/remote-test.sh --docker
+  REMOTE_TEST_DOCKER_IMAGE=rust:1.93.1-bookworm scripts/remote-test.sh --docker
   scripts/remote-test.sh --host ec2-user@your-host --cargo-args '-- --nocapture'
 USAGE
 }
@@ -207,17 +217,17 @@ if [[ "${DO_SYNC}" == "1" ]]; then
   if command -v rsync >/dev/null 2>&1 \
     && is_safe_remote_host "${HOST}" \
     && is_safe_remote_dir_for_rsync "${REMOTE_DIR}"; then
-    rsync -az --delete \
-      --exclude '.git' \
-      --exclude 'target' \
-      --exclude '.DS_Store' \
-      "${ROOT_DIR}/" "${HOST}:${REMOTE_DIR}/"
+    rsync_args=(-az --delete)
+    for pattern in "${SYNC_EXCLUDES[@]}"; do
+      rsync_args+=(--exclude "${pattern}")
+    done
+    rsync "${rsync_args[@]}" "${ROOT_DIR}/" "${HOST}:${REMOTE_DIR}/"
   else
-    tar czf - \
-      --exclude='.git' \
-      --exclude='target' \
-      --exclude='.DS_Store' \
-      -C "${ROOT_DIR}" . | ssh "${HOST}" bash -s -- "${REMOTE_DIR}" <<'EOF'
+    tar_args=(czf -)
+    for pattern in "${SYNC_EXCLUDES[@]}"; do
+      tar_args+=(--exclude="${pattern}")
+    done
+    tar "${tar_args[@]}" -C "${ROOT_DIR}" . | ssh "${HOST}" bash -s -- "${REMOTE_DIR}" <<'EOF'
 set -euo pipefail
 remote_dir="$1"
 remote_dir="${remote_dir/#\~/$HOME}"

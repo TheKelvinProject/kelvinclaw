@@ -1,0 +1,45 @@
+# syntax=docker/dockerfile:1.7
+ARG RUST_VERSION=1.93.1
+ARG DEBIAN_FLAVOR=bookworm
+
+FROM rust:${RUST_VERSION}-${DEBIAN_FLAVOR} AS toolchain
+ARG CARGO_CHEF_VERSION=0.1.71
+ARG CARGO_AUDIT_VERSION=0.22.1
+ARG CARGO_OUTDATED_VERSION=0.17.0
+WORKDIR /work
+
+RUN rustup component add rustfmt clippy
+RUN cargo install --locked cargo-chef --version "${CARGO_CHEF_VERSION}"
+RUN cargo install --locked cargo-audit --version "${CARGO_AUDIT_VERSION}"
+RUN cargo install --locked cargo-outdated --version "${CARGO_OUTDATED_VERSION}"
+
+FROM toolchain AS planner
+COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
+
+FROM toolchain AS deps
+COPY --from=planner /work/recipe.json /work/recipe.json
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/work/target \
+    cargo chef cook --workspace --tests --recipe-path /work/recipe.json
+
+FROM deps AS quick
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/work/target \
+    scripts/test-sdk.sh
+
+FROM deps AS full
+COPY . .
+RUN --mount=type=cache,target=/usr/local/cargo/registry \
+    --mount=type=cache,target=/usr/local/cargo/git \
+    --mount=type=cache,target=/work/target \
+    cargo fmt --all -- --check && \
+    cargo clippy --all -- -D warnings && \
+    cargo audit && \
+    cargo outdated && \
+    cargo test -p kelvin-core -p kelvin-wasm -p kelvin-brain -p kelvin-sdk --lib && \
+    cargo test --workspace --tests && \
+    scripts/test-sdk.sh
