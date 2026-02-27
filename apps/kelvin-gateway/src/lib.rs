@@ -22,6 +22,23 @@ use tokio::time::Duration;
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
+pub const GATEWAY_PROTOCOL_VERSION: &str = "1.0.0";
+pub const GATEWAY_METHODS_V1: &[&str] = &[
+    "agent",
+    "agent.outcome",
+    "agent.state",
+    "agent.wait",
+    "channel.telegram.ingest",
+    "channel.telegram.pair.approve",
+    "channel.telegram.status",
+    "connect",
+    "health",
+    "run.outcome",
+    "run.state",
+    "run.submit",
+    "run.wait",
+];
+
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
     pub bind_addr: SocketAddr,
@@ -420,6 +437,8 @@ async fn handle_connection(stream: TcpStream, state: GatewayState) -> Result<(),
         &first_id,
         json!({
             "status": "connected",
+            "protocol_version": GATEWAY_PROTOCOL_VERSION,
+            "supported_methods": GATEWAY_METHODS_V1,
             "server_time_ms": now_ms(),
             "loaded_installed_plugins": state.runtime.loaded_installed_plugins(),
         }),
@@ -455,6 +474,15 @@ async fn handle_connection(stream: TcpStream, state: GatewayState) -> Result<(),
                     )?;
                     continue;
                 }
+                if !is_supported_method(&method) {
+                    send_error(
+                        &writer_tx,
+                        &id,
+                        "method_not_found",
+                        &format!("unknown method: {method}"),
+                    )?;
+                    continue;
+                }
                 match handle_request(&state, &id, &method, params).await {
                     Ok(payload) => send_ok(&writer_tx, &id, payload)?,
                     Err(err) => send_gateway_error(&writer_tx, &id, err)?,
@@ -485,6 +513,8 @@ async fn handle_request(
     match method {
         "health" => Ok(json!({
             "status": "ok",
+            "protocol_version": GATEWAY_PROTOCOL_VERSION,
+            "supported_methods": GATEWAY_METHODS_V1,
             "uptime_ms": state.started_at.elapsed().as_millis(),
             "loaded_installed_plugins": state.runtime.loaded_installed_plugins(),
             "channels": {
@@ -616,6 +646,10 @@ async fn submit_agent(
     }))
 }
 
+fn is_supported_method(method: &str) -> bool {
+    GATEWAY_METHODS_V1.contains(&method)
+}
+
 fn verify_auth_token(
     required_token: Option<&str>,
     provided_auth: Option<&ConnectAuth>,
@@ -736,6 +770,7 @@ fn send_frame(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashSet;
 
     #[test]
     fn idempotency_cache_evicts_oldest_entry() {
@@ -768,5 +803,42 @@ mod tests {
         assert!(cache.get("a").is_none());
         assert_eq!(cache.get("b").expect("b").run_id, "run-b");
         assert_eq!(cache.get("c").expect("c").run_id, "run-c");
+    }
+
+    #[test]
+    fn gateway_protocol_version_is_stable() {
+        assert_eq!(GATEWAY_PROTOCOL_VERSION, "1.0.0");
+    }
+
+    #[test]
+    fn gateway_method_contract_matches_v1_surface() {
+        let methods = GATEWAY_METHODS_V1.iter().copied().collect::<Vec<_>>();
+        assert_eq!(
+            methods,
+            vec![
+                "agent",
+                "agent.outcome",
+                "agent.state",
+                "agent.wait",
+                "channel.telegram.ingest",
+                "channel.telegram.pair.approve",
+                "channel.telegram.status",
+                "connect",
+                "health",
+                "run.outcome",
+                "run.state",
+                "run.submit",
+                "run.wait",
+            ]
+        );
+        let unique = methods.iter().copied().collect::<HashSet<_>>();
+        assert_eq!(
+            unique.len(),
+            methods.len(),
+            "duplicate method names in contract"
+        );
+        for method in methods {
+            assert!(is_supported_method(method), "missing method from allowlist");
+        }
     }
 }
