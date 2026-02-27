@@ -49,13 +49,19 @@ set KELVIN_MEMORY_ALLOW_INSECURE_NON_LOOPBACK=true only behind a trusted network
 
     let controller = MemoryController::new(cfg, ProviderRegistry::with_default_in_memory())?;
 
-    if let (Ok(manifest_path), Ok(wasm_path)) = (
-        std::env::var("KELVIN_MEMORY_MODULE_MANIFEST"),
-        std::env::var("KELVIN_MEMORY_MODULE_WASM"),
-    ) {
+    if let Ok(manifest_path) = std::env::var("KELVIN_MEMORY_MODULE_MANIFEST") {
         let manifest_bytes = fs::read(&manifest_path)?;
         let manifest: MemoryModuleManifest = serde_json::from_slice(&manifest_bytes)?;
-        let wasm_bytes = fs::read(&wasm_path)?;
+        let wasm_bytes = if let Ok(wasm_path) = std::env::var("KELVIN_MEMORY_MODULE_WASM") {
+            fs::read(&wasm_path)?
+        } else if let Ok(wat_path) = std::env::var("KELVIN_MEMORY_MODULE_WAT") {
+            wat::parse_file(&wat_path)?
+        } else {
+            return Err(
+                "KELVIN_MEMORY_MODULE_MANIFEST requires KELVIN_MEMORY_MODULE_WASM or KELVIN_MEMORY_MODULE_WAT"
+                    .into(),
+            );
+        };
         controller
             .register_module_bytes(manifest, &wasm_bytes)
             .await?;

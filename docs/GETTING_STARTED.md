@@ -3,6 +3,35 @@
 KelvinClaw supports three onboarding tracks based on user experience level.
 Each track has a verification command so the setup can be validated immediately.
 
+## Canonical Quick Start (Daily Driver MVP)
+
+Local profile (gateway + memory controller + SDK runtime):
+
+```bash
+scripts/quickstart.sh --mode local
+```
+
+Docker profile:
+
+```bash
+scripts/quickstart.sh --mode docker
+```
+
+Local profile lifecycle:
+
+```bash
+scripts/kelvin-local-profile.sh start
+scripts/kelvin-local-profile.sh status
+scripts/kelvin-local-profile.sh doctor
+scripts/kelvin-local-profile.sh stop
+```
+
+Run modes:
+
+- single prompt: `kelvin-host --prompt "hello"`
+- interactive chat: `kelvin-host --interactive`
+- daemon mode: `scripts/kelvin-local-profile.sh start` (gateway + memory controller background services)
+
 ## Track 1: Docker-Only (No Rust/WASM Experience Required)
 
 Use this if you want to run KelvinClaw without installing Rust locally.
@@ -44,13 +73,17 @@ Prerequisites:
 
 - `git`
 - `rustup` + `cargo`
+- `jq`
+- `curl`
+- `tar`
+- `openssl`
 
 Steps:
 
 ```bash
 git clone <repo-url>
 cd kelvinclaw
-scripts/try-kelvin.sh "hello"
+scripts/quickstart.sh --mode local
 scripts/test-sdk.sh
 ```
 
@@ -63,7 +96,7 @@ scripts/verify-onboarding.sh --track rust
 Expected result:
 
 - SDK test suite passes.
-- Local runtime run completes with echo payload output.
+- Local profile boots gateway + memory controller and completes a host run.
 
 ## Track 3: Rust + WASM Plugin Author
 
@@ -107,9 +140,10 @@ Run full onboarding verification:
 
 ```bash
 scripts/verify-onboarding.sh --track all
+scripts/verify-onboarding.sh --track daily
 ```
 
-This command runs `beginner`, `rust`, and `wasm` checks in sequence.
+`all` runs `beginner`, `rust`, and `wasm`. `daily` validates the default daily-driver local profile with a time-to-first-success threshold.
 
 ## Security and Stability Notes
 

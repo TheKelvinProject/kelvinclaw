@@ -71,6 +71,10 @@ pub struct KelvinSdkConfig {
     pub plugin_security_policy: PluginSecurityPolicy,
     pub load_installed_plugins: bool,
     pub model_provider: KelvinSdkModelSelection,
+    pub state_dir: Option<PathBuf>,
+    pub persist_runs: bool,
+    pub max_session_history_messages: usize,
+    pub compact_to_messages: usize,
 }
 
 impl KelvinSdkConfig {
@@ -85,6 +89,10 @@ impl KelvinSdkConfig {
         validate_timeout_ms(self.timeout_ms, "timeout_ms")?;
         validate_core_version(&self.core_version)?;
         validate_model_selection(&self.model_provider, self.load_installed_plugins)?;
+        validate_persistence_policy(self.max_session_history_messages, self.compact_to_messages)?;
+        if let Some(state_dir) = &self.state_dir {
+            validate_state_dir(state_dir)?;
+        }
         Ok(())
     }
 
@@ -100,6 +108,10 @@ impl KelvinSdkConfig {
             plugin_security_policy: PluginSecurityPolicy::default(),
             load_installed_plugins: true,
             model_provider: KelvinSdkModelSelection::Echo,
+            state_dir: None,
+            persist_runs: true,
+            max_session_history_messages: 128,
+            compact_to_messages: 64,
         }
     }
 }
@@ -155,21 +167,9 @@ impl KelvinSdkRuntimeConfig {
         validate_timeout_ms(self.default_timeout_ms, "default_timeout_ms")?;
         validate_core_version(&self.core_version)?;
         validate_model_selection(&self.model_provider, self.load_installed_plugins)?;
-
-        if self.max_session_history_messages < 4 {
-            return Err(KelvinError::InvalidInput(
-                "max_session_history_messages must be >= 4".to_string(),
-            ));
-        }
-        if self.compact_to_messages < 2 {
-            return Err(KelvinError::InvalidInput(
-                "compact_to_messages must be >= 2".to_string(),
-            ));
-        }
-        if self.compact_to_messages >= self.max_session_history_messages {
-            return Err(KelvinError::InvalidInput(
-                "compact_to_messages must be smaller than max_session_history_messages".to_string(),
-            ));
+        validate_persistence_policy(self.max_session_history_messages, self.compact_to_messages)?;
+        if let Some(state_dir) = &self.state_dir {
+            validate_state_dir(state_dir)?;
         }
         Ok(())
     }
@@ -187,10 +187,13 @@ impl KelvinSdkRuntimeConfig {
             model_provider: config.model_provider.clone(),
             require_cli_plugin_tool: true,
             emit_stdout_events: true,
-            state_dir: Some(config.workspace_dir.join(".kelvin").join("state")),
-            persist_runs: true,
-            max_session_history_messages: 128,
-            compact_to_messages: 64,
+            state_dir: config
+                .state_dir
+                .clone()
+                .or_else(|| Some(config.workspace_dir.join(".kelvin").join("state"))),
+            persist_runs: config.persist_runs,
+            max_session_history_messages: config.max_session_history_messages,
+            compact_to_messages: config.compact_to_messages,
         }
     }
 }
@@ -252,6 +255,43 @@ fn validate_timeout_ms(value: u64, label: &str) -> KelvinResult<()> {
     if !(MIN_DEFAULT_TIMEOUT_MS..=MAX_DEFAULT_TIMEOUT_MS).contains(&value) {
         return Err(KelvinError::InvalidInput(format!(
             "{label} must be between {MIN_DEFAULT_TIMEOUT_MS} and {MAX_DEFAULT_TIMEOUT_MS} milliseconds"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_persistence_policy(
+    max_session_history_messages: usize,
+    compact_to_messages: usize,
+) -> KelvinResult<()> {
+    if max_session_history_messages < 4 {
+        return Err(KelvinError::InvalidInput(
+            "max_session_history_messages must be >= 4".to_string(),
+        ));
+    }
+    if compact_to_messages < 2 {
+        return Err(KelvinError::InvalidInput(
+            "compact_to_messages must be >= 2".to_string(),
+        ));
+    }
+    if compact_to_messages >= max_session_history_messages {
+        return Err(KelvinError::InvalidInput(
+            "compact_to_messages must be smaller than max_session_history_messages".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_state_dir(path: &Path) -> KelvinResult<()> {
+    if path.as_os_str().is_empty() {
+        return Err(KelvinError::InvalidInput(
+            "state_dir must not be empty".to_string(),
+        ));
+    }
+    if path.exists() && !path.is_dir() {
+        return Err(KelvinError::InvalidInput(format!(
+            "state_dir must be a directory when present: {}",
+            path.to_string_lossy()
         )));
     }
     Ok(())
@@ -354,20 +394,9 @@ impl RuntimePersistence {
         max_session_history_messages: usize,
         compact_to_messages: usize,
     ) -> KelvinResult<Self> {
-        if max_session_history_messages < 4 {
-            return Err(KelvinError::InvalidInput(
-                "max_session_history_messages must be >= 4".to_string(),
-            ));
-        }
-        if compact_to_messages < 2 {
-            return Err(KelvinError::InvalidInput(
-                "compact_to_messages must be >= 2".to_string(),
-            ));
-        }
-        if compact_to_messages >= max_session_history_messages {
-            return Err(KelvinError::InvalidInput(
-                "compact_to_messages must be smaller than max_session_history_messages".to_string(),
-            ));
+        validate_persistence_policy(max_session_history_messages, compact_to_messages)?;
+        if let Some(dir) = &state_dir {
+            validate_state_dir(dir)?;
         }
 
         let persistence = Self {
@@ -432,27 +461,54 @@ impl RuntimePersistence {
         let entries = fs::read_dir(&sessions_dir)
             .map_err(|err| KelvinError::Io(format!("read sessions dir: {err}")))?;
         for entry in entries {
-            let entry =
-                entry.map_err(|err| KelvinError::Io(format!("read session entry: {err}")))?;
-            if !entry
-                .file_type()
-                .map_err(|err| KelvinError::Io(format!("read session entry type: {err}")))?
-                .is_dir()
-            {
+            let entry = match entry {
+                Ok(value) => value,
+                Err(err) => {
+                    eprintln!("warning: skipping unreadable session entry: {err}");
+                    continue;
+                }
+            };
+            let is_dir = match entry.file_type() {
+                Ok(file_type) => file_type.is_dir(),
+                Err(err) => {
+                    eprintln!(
+                        "warning: skipping session entry with unreadable type '{}': {err}",
+                        entry.path().to_string_lossy()
+                    );
+                    continue;
+                }
+            };
+            if !is_dir {
                 continue;
             }
             let descriptor_path = entry.path().join("descriptor.json");
             if !descriptor_path.is_file() {
                 continue;
             }
-            let descriptor_bytes = fs::read(&descriptor_path)
-                .map_err(|err| KelvinError::Io(format!("read descriptor file: {err}")))?;
-            let descriptor: SessionDescriptor = serde_json::from_slice(&descriptor_bytes)
-                .map_err(|err| KelvinError::Io(format!("parse descriptor file: {err}")))?;
+            let descriptor_bytes = match fs::read(&descriptor_path) {
+                Ok(bytes) => bytes,
+                Err(err) => {
+                    eprintln!(
+                        "warning: failed to read descriptor '{}': {err}; continuing",
+                        descriptor_path.to_string_lossy()
+                    );
+                    continue;
+                }
+            };
+            let descriptor: SessionDescriptor = match serde_json::from_slice(&descriptor_bytes) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    quarantine_corrupt_file(
+                        &descriptor_path,
+                        &format!("invalid session descriptor json: {err}"),
+                    );
+                    continue;
+                }
+            };
 
             let messages_path = entry.path().join("messages.jsonl");
             let session_messages = if messages_path.is_file() {
-                self.read_messages_file(&messages_path)?
+                self.read_messages_file(&messages_path)
             } else {
                 Vec::new()
             };
@@ -464,21 +520,49 @@ impl RuntimePersistence {
         Ok((sessions, messages))
     }
 
-    fn read_messages_file(&self, path: &PathBuf) -> KelvinResult<Vec<SessionMessage>> {
-        let file = File::open(path)
-            .map_err(|err| KelvinError::Io(format!("open messages file: {err}")))?;
+    fn read_messages_file(&self, path: &PathBuf) -> Vec<SessionMessage> {
+        let file = match File::open(path) {
+            Ok(file) => file,
+            Err(err) => {
+                quarantine_corrupt_file(path, &format!("unable to open messages file: {err}"));
+                return Vec::new();
+            }
+        };
         let reader = BufReader::new(file);
         let mut out = Vec::new();
-        for line in reader.lines() {
-            let line = line.map_err(|err| KelvinError::Io(format!("read messages line: {err}")))?;
+        for (line_number, line) in reader.lines().enumerate() {
+            let line = match line {
+                Ok(value) => value,
+                Err(err) => {
+                    quarantine_corrupt_file(
+                        path,
+                        &format!(
+                            "failed to read messages line {}: {err}",
+                            line_number.saturating_add(1)
+                        ),
+                    );
+                    return Vec::new();
+                }
+            };
             if line.trim().is_empty() {
                 continue;
             }
-            let message: SessionMessage = serde_json::from_str(&line)
-                .map_err(|err| KelvinError::Io(format!("parse message line: {err}")))?;
+            let message: SessionMessage = match serde_json::from_str(&line) {
+                Ok(parsed) => parsed,
+                Err(err) => {
+                    quarantine_corrupt_file(
+                        path,
+                        &format!(
+                            "invalid messages line {} json: {err}",
+                            line_number.saturating_add(1)
+                        ),
+                    );
+                    return Vec::new();
+                }
+            };
             out.push(message);
         }
-        Ok(out)
+        out
     }
 
     fn persist_session_descriptor(&self, session: &SessionDescriptor) -> KelvinResult<()> {
@@ -558,6 +642,32 @@ fn write_atomic(path: &PathBuf, bytes: &[u8]) -> KelvinResult<()> {
         .map_err(|err| KelvinError::Io(format!("sync temp file: {err}")))?;
     fs::rename(&tmp_path, path).map_err(|err| KelvinError::Io(format!("replace file: {err}")))?;
     Ok(())
+}
+
+fn quarantine_corrupt_file(path: &Path, reason: &str) {
+    let Some(file_name) = path.file_name().and_then(|item| item.to_str()) else {
+        eprintln!(
+            "warning: corrupt state artifact could not be quarantined (invalid path '{}'): {}",
+            path.to_string_lossy(),
+            reason
+        );
+        return;
+    };
+    let renamed = path.with_file_name(format!("{file_name}.corrupt.{}", now_ms()));
+    match fs::rename(path, &renamed) {
+        Ok(()) => eprintln!(
+            "warning: quarantined corrupt state artifact '{}' as '{}' ({})",
+            path.to_string_lossy(),
+            renamed.to_string_lossy(),
+            reason
+        ),
+        Err(err) => eprintln!(
+            "warning: corrupt state artifact '{}' detected but quarantine rename failed: {} ({})",
+            path.to_string_lossy(),
+            err,
+            reason
+        ),
+    }
 }
 
 struct FileBackedSessionStore {
@@ -2027,5 +2137,121 @@ mod tests {
             .filter(|line| !line.trim().is_empty())
             .collect::<Vec<_>>();
         assert!(lines.len() <= 6);
+    }
+
+    #[tokio::test]
+    async fn sdk_runtime_initialization_recovers_from_corrupt_descriptor() {
+        let runtime_workspace = unique_workspace();
+        let state_dir = runtime_workspace.join(".kelvin").join("state");
+        let session_dir = state_dir
+            .join("sessions")
+            .join(super::RuntimePersistence::key_hex("recover-session"));
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        fs::write(session_dir.join("descriptor.json"), b"{not-json").expect("write descriptor");
+
+        let runtime = super::KelvinSdkRuntime::initialize(super::KelvinSdkRuntimeConfig {
+            workspace_dir: runtime_workspace,
+            default_session_id: "recover-session".to_string(),
+            memory_mode: super::KelvinCliMemoryMode::Fallback,
+            default_timeout_ms: 3_000,
+            default_system_prompt: None,
+            core_version: "0.1.0".to_string(),
+            plugin_security_policy: Default::default(),
+            load_installed_plugins: false,
+            model_provider: super::KelvinSdkModelSelection::Echo,
+            require_cli_plugin_tool: false,
+            emit_stdout_events: false,
+            state_dir: Some(state_dir.clone()),
+            persist_runs: false,
+            max_session_history_messages: 32,
+            compact_to_messages: 16,
+        })
+        .await
+        .expect("runtime should recover from corrupt descriptor");
+
+        assert_eq!(runtime.loaded_installed_plugins(), 0);
+        let quarantine_exists = fs::read_dir(&session_dir)
+            .expect("read session dir")
+            .filter_map(|entry| entry.ok())
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("descriptor.json.corrupt.")
+            });
+        assert!(
+            quarantine_exists,
+            "corrupt descriptor should be quarantined"
+        );
+    }
+
+    #[tokio::test]
+    async fn sdk_runtime_initialization_recovers_from_corrupt_messages_file() {
+        let runtime_workspace = unique_workspace();
+        let state_dir = runtime_workspace.join(".kelvin").join("state");
+        let session_id = "recover-messages-session";
+        let session_dir = state_dir
+            .join("sessions")
+            .join(super::RuntimePersistence::key_hex(session_id));
+        fs::create_dir_all(&session_dir).expect("create session dir");
+        let descriptor = json!({
+            "session_id": session_id,
+            "session_key": session_id,
+            "workspace_dir": runtime_workspace.to_string_lossy(),
+        });
+        fs::write(
+            session_dir.join("descriptor.json"),
+            serde_json::to_vec(&descriptor).expect("descriptor bytes"),
+        )
+        .expect("write descriptor");
+        fs::write(session_dir.join("messages.jsonl"), b"{bad-line").expect("write messages");
+
+        let runtime = super::KelvinSdkRuntime::initialize(super::KelvinSdkRuntimeConfig {
+            workspace_dir: runtime_workspace,
+            default_session_id: session_id.to_string(),
+            memory_mode: super::KelvinCliMemoryMode::Fallback,
+            default_timeout_ms: 3_000,
+            default_system_prompt: None,
+            core_version: "0.1.0".to_string(),
+            plugin_security_policy: Default::default(),
+            load_installed_plugins: false,
+            model_provider: super::KelvinSdkModelSelection::Echo,
+            require_cli_plugin_tool: false,
+            emit_stdout_events: false,
+            state_dir: Some(state_dir.clone()),
+            persist_runs: false,
+            max_session_history_messages: 32,
+            compact_to_messages: 16,
+        })
+        .await
+        .expect("runtime should recover from corrupt messages");
+
+        let accepted = runtime
+            .submit(super::KelvinSdkRunRequest {
+                prompt: "recovered".to_string(),
+                session_id: Some(session_id.to_string()),
+                workspace_dir: None,
+                timeout_ms: Some(3_000),
+                system_prompt: None,
+                memory_query: None,
+                run_id: None,
+            })
+            .await
+            .expect("submit after recovery");
+        let _ = runtime
+            .wait_for_outcome(&accepted.run_id, 5_000)
+            .await
+            .expect("outcome");
+
+        let quarantine_exists = fs::read_dir(&session_dir)
+            .expect("read session dir")
+            .filter_map(|entry| entry.ok())
+            .any(|entry| {
+                entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("messages.jsonl.corrupt.")
+            });
+        assert!(quarantine_exists, "corrupt messages should be quarantined");
     }
 }

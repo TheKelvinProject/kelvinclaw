@@ -10,9 +10,14 @@ use kelvin_sdk::{KelvinCliMemoryMode, KelvinSdkModelSelection, KelvinSdkRuntimeC
 struct CliConfig {
     bind_addr: SocketAddr,
     auth_token: Option<String>,
+    default_session_id: String,
     workspace_dir: PathBuf,
     memory_mode: KelvinCliMemoryMode,
     default_timeout_ms: u64,
+    state_dir: Option<PathBuf>,
+    persist_runs: bool,
+    max_session_history_messages: usize,
+    compact_to_messages: usize,
     model_provider: KelvinSdkModelSelection,
     load_installed_plugins: bool,
     require_cli_plugin_tool: bool,
@@ -24,7 +29,7 @@ struct CliConfig {
 }
 
 fn usage() -> &'static str {
-    "Usage: kelvin-gateway [--bind <host:port>] [--token <token>] [--workspace <dir>] [--memory markdown|in-memory|fallback] [--timeout-ms <ms>] [--model-provider <plugin_id>] [--model-provider-failover <id1,id2,...>] [--failover-retries <n>] [--failover-backoff-ms <ms>] [--load-installed-plugins true|false] [--require-cli-plugin true|false] [--doctor] [--endpoint <ws://host:port>] [--plugin-home <path>] [--trust-policy <path>] [--doctor-timeout-ms <ms>]"
+    "Usage: kelvin-gateway [--bind <host:port>] [--token <token>] [--session <id>] [--workspace <dir>] [--memory markdown|in-memory|fallback] [--timeout-ms <ms>] [--state-dir <path>] [--persist-runs true|false] [--max-session-history <n>] [--compact-to <n>] [--model-provider <plugin_id>] [--model-provider-failover <id1,id2,...>] [--failover-retries <n>] [--failover-backoff-ms <ms>] [--load-installed-plugins true|false] [--require-cli-plugin true|false] [--doctor] [--endpoint <ws://host:port>] [--plugin-home <path>] [--trust-policy <path>] [--doctor-timeout-ms <ms>]"
 }
 
 fn parse_bool(value: &str, flag: &str) -> Result<bool, String> {
@@ -41,9 +46,14 @@ fn parse_args() -> Result<CliConfig, String> {
         .parse()
         .map_err(|err| format!("invalid default bind addr: {err}"))?;
     let mut auth_token = env::var("KELVIN_GATEWAY_TOKEN").ok();
+    let mut default_session_id = "main".to_string();
     let mut workspace_dir = env::current_dir().map_err(|err| err.to_string())?;
     let mut memory_mode = KelvinCliMemoryMode::Markdown;
     let mut default_timeout_ms = 30_000_u64;
+    let mut state_dir: Option<PathBuf> = None;
+    let mut persist_runs = true;
+    let mut max_session_history_messages = 128_usize;
+    let mut compact_to_messages = 64_usize;
     let mut model_provider = KelvinSdkModelSelection::Echo;
     let mut load_installed_plugins = true;
     let mut require_cli_plugin_tool = false;
@@ -107,6 +117,11 @@ fn parse_args() -> Result<CliConfig, String> {
                     Some(trimmed.to_string())
                 };
             }
+            "--session" => {
+                default_session_id = args
+                    .next()
+                    .ok_or_else(|| "missing value for --session".to_string())?;
+            }
             "--workspace" => {
                 let value = args
                     .next()
@@ -126,6 +141,34 @@ fn parse_args() -> Result<CliConfig, String> {
                 default_timeout_ms = value
                     .parse::<u64>()
                     .map_err(|_| "invalid numeric value for --timeout-ms".to_string())?;
+            }
+            "--state-dir" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --state-dir".to_string())?;
+                state_dir = Some(PathBuf::from(value));
+            }
+            "--persist-runs" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --persist-runs".to_string())?;
+                persist_runs = parse_bool(&value, "--persist-runs")?;
+            }
+            "--max-session-history" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --max-session-history".to_string())?;
+                max_session_history_messages = value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid numeric value for --max-session-history".to_string())?;
+            }
+            "--compact-to" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --compact-to".to_string())?;
+                compact_to_messages = value
+                    .parse::<usize>()
+                    .map_err(|_| "invalid numeric value for --compact-to".to_string())?;
             }
             "--model-provider" => {
                 let value = args
@@ -197,9 +240,14 @@ fn parse_args() -> Result<CliConfig, String> {
     Ok(CliConfig {
         bind_addr,
         auth_token,
+        default_session_id,
         workspace_dir,
         memory_mode,
         default_timeout_ms,
+        state_dir,
+        persist_runs,
+        max_session_history_messages,
+        compact_to_messages,
         model_provider,
         load_installed_plugins,
         require_cli_plugin_tool,
@@ -255,7 +303,7 @@ async fn main() {
             let state_dir = config.workspace_dir.join(".kelvin").join("state");
             let runtime_config = KelvinSdkRuntimeConfig {
                 workspace_dir: config.workspace_dir,
-                default_session_id: "main".to_string(),
+                default_session_id: config.default_session_id,
                 memory_mode: config.memory_mode,
                 default_timeout_ms: config.default_timeout_ms,
                 default_system_prompt: None,
@@ -265,10 +313,10 @@ async fn main() {
                 model_provider: config.model_provider,
                 require_cli_plugin_tool: config.require_cli_plugin_tool,
                 emit_stdout_events: false,
-                state_dir: Some(state_dir),
-                persist_runs: true,
-                max_session_history_messages: 128,
-                compact_to_messages: 64,
+                state_dir: config.state_dir.or(Some(state_dir)),
+                persist_runs: config.persist_runs,
+                max_session_history_messages: config.max_session_history_messages,
+                compact_to_messages: config.compact_to_messages,
             };
             let gateway_config = GatewayConfig {
                 bind_addr: config.bind_addr,

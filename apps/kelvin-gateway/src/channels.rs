@@ -237,6 +237,24 @@ struct TelegramChannelAdapter {
     seen_delivery_order: VecDeque<String>,
     rate_windows: HashMap<i64, VecDeque<u128>>,
     client: reqwest::Client,
+    metrics: TelegramChannelMetrics,
+}
+
+#[derive(Debug, Clone, Default)]
+struct TelegramChannelMetrics {
+    ingest_total: u64,
+    deduped_total: u64,
+    pairing_required_total: u64,
+    pairing_approved_total: u64,
+    rate_limited_total: u64,
+    completed_total: u64,
+    failed_total: u64,
+    timeout_total: u64,
+    outbound_attempt_total: u64,
+    outbound_retry_total: u64,
+    outbound_failure_total: u64,
+    last_error: Option<String>,
+    last_delivery_at_ms: Option<u128>,
 }
 
 impl TelegramChannelAdapter {
@@ -249,6 +267,7 @@ impl TelegramChannelAdapter {
             seen_delivery_order: VecDeque::new(),
             rate_windows: HashMap::new(),
             client: reqwest::Client::new(),
+            metrics: TelegramChannelMetrics::default(),
         })
     }
 
@@ -261,6 +280,21 @@ impl TelegramChannelAdapter {
             "seen_delivery_ids": self.seen_delivery_ids.len(),
             "allowlist_size": self.config.allow_chat_ids.len(),
             "outbound_delivery_enabled": self.config.bot_token.is_some(),
+            "metrics": {
+                "ingest_total": self.metrics.ingest_total,
+                "deduped_total": self.metrics.deduped_total,
+                "pairing_required_total": self.metrics.pairing_required_total,
+                "pairing_approved_total": self.metrics.pairing_approved_total,
+                "rate_limited_total": self.metrics.rate_limited_total,
+                "completed_total": self.metrics.completed_total,
+                "failed_total": self.metrics.failed_total,
+                "timeout_total": self.metrics.timeout_total,
+                "outbound_attempt_total": self.metrics.outbound_attempt_total,
+                "outbound_retry_total": self.metrics.outbound_retry_total,
+                "outbound_failure_total": self.metrics.outbound_failure_total,
+                "last_error": self.metrics.last_error.clone(),
+                "last_delivery_at_ms": self.metrics.last_delivery_at_ms,
+            }
         })
     }
 
@@ -275,6 +309,7 @@ impl TelegramChannelAdapter {
             return Err(KelvinError::NotFound("pairing code not found".to_string()));
         };
         self.paired_chat_ids.insert(chat_id);
+        self.metrics.pairing_approved_total = self.metrics.pairing_approved_total.saturating_add(1);
         Ok(json!({
             "approved": true,
             "chat_id": chat_id,
@@ -287,6 +322,7 @@ impl TelegramChannelAdapter {
         request: TelegramIngressRequest,
     ) -> KelvinErrorOr<Value> {
         let delivery_id = request.delivery_id.trim().to_string();
+        self.metrics.ingest_total = self.metrics.ingest_total.saturating_add(1);
         if delivery_id.is_empty() {
             return Err(KelvinError::InvalidInput(
                 "delivery_id must not be empty".to_string(),
@@ -305,14 +341,21 @@ impl TelegramChannelAdapter {
         }
 
         if self.is_duplicate_delivery(&delivery_id) {
+            self.metrics.deduped_total = self.metrics.deduped_total.saturating_add(1);
             return Ok(json!({
                 "status": "deduped",
                 "delivery_id": delivery_id,
             }));
         }
 
-        self.enforce_rate_limit(request.chat_id)?;
+        if let Err(err) = self.enforce_rate_limit(request.chat_id) {
+            self.metrics.rate_limited_total = self.metrics.rate_limited_total.saturating_add(1);
+            self.metrics.last_error = Some(err.to_string());
+            return Err(err);
+        }
         if let Some(code) = self.enforce_pairing_policy(request.chat_id)? {
+            self.metrics.pairing_required_total =
+                self.metrics.pairing_required_total.saturating_add(1);
             let pairing_message = format!(
                 "KelvinClaw pairing required. Approve code: {code} using channel.telegram.pair.approve."
             );
@@ -360,6 +403,8 @@ impl TelegramChannelAdapter {
                 };
                 self.send_message_with_retry(request.chat_id, &outbound_text)
                     .await?;
+                self.metrics.completed_total = self.metrics.completed_total.saturating_add(1);
+                self.metrics.last_error = None;
 
                 Ok(json!({
                     "status": "completed",
@@ -369,6 +414,8 @@ impl TelegramChannelAdapter {
                 }))
             }
             RunOutcome::Failed(error) => {
+                self.metrics.failed_total = self.metrics.failed_total.saturating_add(1);
+                self.metrics.last_error = Some(error.clone());
                 let outbound_text = format!("Kelvin run failed: {error}");
                 let _ = self
                     .send_message_with_retry(request.chat_id, &outbound_text)
@@ -381,6 +428,8 @@ impl TelegramChannelAdapter {
                 }))
             }
             RunOutcome::Timeout => {
+                self.metrics.timeout_total = self.metrics.timeout_total.saturating_add(1);
+                self.metrics.last_error = Some("run timed out".to_string());
                 let outbound_text = "Kelvin run timed out.".to_string();
                 let _ = self
                     .send_message_with_retry(request.chat_id, &outbound_text)
@@ -402,6 +451,7 @@ impl TelegramChannelAdapter {
         if self.seen_delivery_ids.insert(delivery_id.clone()) {
             self.seen_delivery_order.push_back(delivery_id);
         }
+        self.metrics.last_delivery_at_ms = Some(now_ms());
         while self.seen_delivery_order.len() > self.config.max_seen_delivery_ids {
             if let Some(evicted) = self.seen_delivery_order.pop_front() {
                 self.seen_delivery_ids.remove(&evicted);
@@ -466,7 +516,7 @@ impl TelegramChannelAdapter {
         Ok(Some(code))
     }
 
-    async fn send_message_with_retry(&self, chat_id: i64, text: &str) -> KelvinErrorOr<()> {
+    async fn send_message_with_retry(&mut self, chat_id: i64, text: &str) -> KelvinErrorOr<()> {
         let Some(bot_token) = &self.config.bot_token else {
             return Ok(());
         };
@@ -483,6 +533,8 @@ impl TelegramChannelAdapter {
 
         let mut last_error = None;
         for attempt in 0..=self.config.outbound_max_retries {
+            self.metrics.outbound_attempt_total =
+                self.metrics.outbound_attempt_total.saturating_add(1);
             match self.client.post(&endpoint).json(&body).send().await {
                 Ok(response) if response.status().is_success() => return Ok(()),
                 Ok(response) => {
@@ -496,6 +548,8 @@ impl TelegramChannelAdapter {
                 }
             }
             if attempt < self.config.outbound_max_retries {
+                self.metrics.outbound_retry_total =
+                    self.metrics.outbound_retry_total.saturating_add(1);
                 sleep(Duration::from_millis(
                     self.config.outbound_retry_backoff_ms.max(1),
                 ))
@@ -503,6 +557,12 @@ impl TelegramChannelAdapter {
             }
         }
 
+        self.metrics.outbound_failure_total = self.metrics.outbound_failure_total.saturating_add(1);
+        self.metrics.last_error = Some(
+            last_error
+                .clone()
+                .unwrap_or_else(|| "unknown outbound error".to_string()),
+        );
         Err(KelvinError::Backend(format!(
             "telegram outbound delivery failed after retries: {}",
             last_error.unwrap_or_else(|| "unknown error".to_string())
@@ -548,5 +608,30 @@ mod tests {
             .expect("policy")
             .expect("code");
         assert_eq!(code_one, code_two);
+    }
+
+    #[test]
+    fn telegram_status_exposes_observability_metrics() {
+        let config = TelegramChannelConfig {
+            enabled: true,
+            bot_token: None,
+            api_base_url: "https://api.telegram.org".to_string(),
+            allow_chat_ids: HashSet::new(),
+            pairing_enabled: true,
+            max_messages_per_minute: 10,
+            max_seen_delivery_ids: 128,
+            outbound_max_retries: 0,
+            outbound_retry_backoff_ms: 1,
+        };
+        let mut adapter = TelegramChannelAdapter::new(config).expect("adapter");
+        let code = adapter
+            .enforce_pairing_policy(7)
+            .expect("policy")
+            .expect("pairing code");
+        adapter.approve_pairing(&code).expect("approve");
+        let status = adapter.status();
+        assert_eq!(status["metrics"]["ingest_total"], json!(0));
+        assert_eq!(status["metrics"]["pairing_approved_total"], json!(1));
+        assert_eq!(status["metrics"]["outbound_failure_total"], json!(0));
     }
 }

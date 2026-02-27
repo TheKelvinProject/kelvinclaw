@@ -17,10 +17,11 @@ Tracks:
   beginner  Docker-only path (no local Rust required)
   rust      Local Rust runtime path
   wasm      Rust + wasm plugin-author path
+  daily     Daily-driver local profile (gateway + memory + sdk runtime)
   all       Run all tracks (default)
 
 Options:
-  --track <beginner|rust|wasm|all>  Select verification track
+  --track <beginner|rust|wasm|daily|all>  Select verification track
   --prompt <text>                   Prompt used for runtime smoke checks
   -h, --help                        Show help
 
@@ -28,6 +29,7 @@ Examples:
   scripts/verify-onboarding.sh --track beginner
   scripts/verify-onboarding.sh --track rust
   scripts/verify-onboarding.sh --track wasm
+  scripts/verify-onboarding.sh --track daily
   scripts/verify-onboarding.sh --track all
 USAGE
 }
@@ -150,6 +152,49 @@ MSG
   echo "[verify-onboarding] track=wasm result=pass"
 }
 
+run_daily() {
+  echo "[verify-onboarding] track=daily"
+  if ! ensure_rust_toolchain_path; then
+    echo "[verify-onboarding] missing required commands: cargo/rustup" >&2
+    exit 1
+  fi
+  require_cmd cargo
+  local started_at elapsed max_ttfs
+  started_at="$(date +%s)"
+  max_ttfs="${KELVIN_DAILY_MAX_TTFS_SECS:-900}"
+
+  cleanup_daily() {
+    (cd "${ROOT_DIR}" && scripts/kelvin-local-profile.sh stop >/dev/null 2>&1) || true
+  }
+  trap cleanup_daily RETURN
+
+  (
+    cd "${ROOT_DIR}"
+    scripts/kelvin-local-profile.sh start
+    scripts/kelvin-local-profile.sh doctor
+  )
+
+  local log_path
+  log_path="$(mktemp)"
+  (
+    cd "${ROOT_DIR}"
+    KELVIN_TRY_MODE=local \
+      scripts/try-kelvin.sh "${PROMPT_BASE} daily"
+  ) | tee "${log_path}"
+  assert_echo_payload "${log_path}" "daily"
+  rm -f "${log_path}"
+
+  elapsed="$(( $(date +%s) - started_at ))"
+  if [[ "${elapsed}" -gt "${max_ttfs}" ]]; then
+    echo "[verify-onboarding] daily: time-to-first-success exceeded threshold (${elapsed}s > ${max_ttfs}s)" >&2
+    exit 1
+  fi
+
+  trap - RETURN
+  cleanup_daily
+  echo "[verify-onboarding] track=daily result=pass ttfs_secs=${elapsed}"
+}
+
 case "${TRACK}" in
   beginner)
     run_beginner
@@ -160,13 +205,16 @@ case "${TRACK}" in
   wasm)
     run_wasm
     ;;
+  daily)
+    run_daily
+    ;;
   all)
     run_beginner
     run_rust
     run_wasm
     ;;
   *)
-    echo "Invalid track: ${TRACK} (expected beginner, rust, wasm, or all)" >&2
+    echo "Invalid track: ${TRACK} (expected beginner, rust, wasm, daily, or all)" >&2
     exit 1
     ;;
 esac

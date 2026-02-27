@@ -20,12 +20,20 @@ Choose the onboarding path for your experience level:
 
 - [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)
 
+Canonical quick start commands:
+
+```bash
+scripts/quickstart.sh --mode local
+scripts/quickstart.sh --mode docker
+```
+
 Verify a specific path:
 
 ```bash
 scripts/verify-onboarding.sh --track beginner
 scripts/verify-onboarding.sh --track rust
 scripts/verify-onboarding.sh --track wasm
+scripts/verify-onboarding.sh --track daily
 ```
 
 ## Repository Layout
@@ -172,6 +180,12 @@ Quick run:
 scripts/try-kelvin.sh "hello"
 ```
 
+Interactive mode:
+
+```bash
+cargo run -p kelvin-host -- --interactive --workspace /path/to/workspace --state-dir /path/to/workspace/.kelvin/state
+```
+
 ## Gateway Example
 
 Run the gateway with connect-token auth:
@@ -198,8 +212,12 @@ Methods available over the socket:
 Operational scripts:
 
 - `scripts/kelvin-gateway-daemon.sh start|stop|status|logs|health`
+- `scripts/kelvin-local-profile.sh start|stop|status|doctor`
+- `scripts/quickstart.sh --mode local|docker`
 - `scripts/kelvin-doctor.sh`
 - `scripts/kelvin-webchat.sh [port]`
+
+`kelvin-doctor` and gateway `--doctor` output machine-readable checks with remediation hints.
 
 ## Runtime Container (No Rust Toolchain Required)
 

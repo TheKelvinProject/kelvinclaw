@@ -71,7 +71,7 @@ These are still open and are prioritized by security, stability, and maintainabi
 
 ### 1) Channel Integrations
 
-Status: `OPEN`
+Status: `PARTIAL`
 
 Needed:
 
@@ -79,9 +79,14 @@ Needed:
 - per-channel auth/routing/allowlist policy
 - deterministic delivery/retry + rate controls per channel
 
+Now implemented:
+
+- Telegram ingress lane with dedupe, pairing, retry, and rate limiting
+- channel status observability metrics (ingest/dedupe/pairing/rate/timeout/retry/failure counters)
+
 ### 2) Daemon Lifecycle + Operator UX
 
-Status: `OPEN`
+Status: `PARTIAL`
 
 Needed:
 
@@ -89,9 +94,15 @@ Needed:
 - startup health checks and fail-fast diagnostics
 - remote-safe defaults for exposure/auth
 
+Now implemented:
+
+- `scripts/kelvin-local-profile.sh` for local background memory+gateway lifecycle
+- actionable machine-readable doctor checks with remediation hints
+- canonical quickstart flow (`scripts/quickstart.sh`)
+
 ### 3) Control UI and Operator Observability
 
-Status: `OPEN`
+Status: `PARTIAL`
 
 Needed:
 
@@ -99,15 +110,26 @@ Needed:
 - run/session/event inspection
 - policy and plugin state visibility
 
+Now implemented:
+
+- gateway webchat UI over websocket protocol
+- gateway health payload and channel status surfaces
+
 ### 4) Rich Context Management (Compaction/Pruning)
 
-Status: `OPEN`
+Status: `DONE`
 
 Needed:
 
 - deterministic compaction policy
 - pruning thresholds + summaries
 - run-level bounds on context growth
+
+Now implemented:
+
+- configurable compaction controls (`max_session_history_messages`, `compact_to_messages`)
+- persisted run/session state with bounded history and compacted summaries
+- corrupt session-state recovery with quarantine behavior
 
 ### 5) Multi-provider Auth Profiles and Routing Policy
 
@@ -126,4 +148,3 @@ Needed:
 3. Add gateway security tests for malformed frames, replay pressure, and auth brute-force throttling.
 4. Add compaction/pruning policy trait in SDK path with deterministic tests.
 5. Add a minimal control UI shell consuming gateway methods.
-

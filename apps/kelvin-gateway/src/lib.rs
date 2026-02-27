@@ -185,7 +185,7 @@ pub struct GatewayDoctorConfig {
 
 pub async fn run_gateway_doctor(config: GatewayDoctorConfig) -> Result<Value, String> {
     let plugin_home_ok = config.plugin_home.is_dir();
-    let trust_policy_ok = config.trust_policy_path.is_file()
+    let trust_policy_parse_ok = config.trust_policy_path.is_file()
         && fs::read(&config.trust_policy_path)
             .ok()
             .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
@@ -194,7 +194,11 @@ pub async fn run_gateway_doctor(config: GatewayDoctorConfig) -> Result<Value, St
     let mut ws_ok = false;
     let mut connect_ok = false;
     let mut health_ok = false;
+    let mut ws_error: Option<String> = None;
+    let mut connect_error: Option<String> = None;
+    let mut health_error: Option<String> = None;
     let mut doctor_errors = Vec::new();
+    let mut checks = Vec::new();
 
     let connect_result = tokio::time::timeout(
         Duration::from_millis(config.timeout_ms.max(250)),
@@ -218,21 +222,23 @@ pub async fn run_gateway_doctor(config: GatewayDoctorConfig) -> Result<Value, St
                 .await
                 .is_err()
             {
-                doctor_errors.push("failed to send connect request".to_string());
+                let message = "failed to send connect request".to_string();
+                connect_error = Some(message.clone());
+                doctor_errors.push(message);
             } else if let Ok(response) = wait_for_response(&mut socket, "doctor-connect").await {
                 connect_ok = response
                     .get("ok")
                     .and_then(|value| value.as_bool())
                     .unwrap_or(false);
                 if !connect_ok {
-                    doctor_errors.push(
-                        response
-                            .get("error")
-                            .and_then(|value| value.get("message"))
-                            .and_then(|value| value.as_str())
-                            .unwrap_or("connect failed")
-                            .to_string(),
-                    );
+                    let message = response
+                        .get("error")
+                        .and_then(|value| value.get("message"))
+                        .and_then(|value| value.as_str())
+                        .unwrap_or("connect failed")
+                        .to_string();
+                    connect_error = Some(message.clone());
+                    doctor_errors.push(message);
                 } else {
                     let health_payload = json!({
                         "type": "req",
@@ -245,7 +251,9 @@ pub async fn run_gateway_doctor(config: GatewayDoctorConfig) -> Result<Value, St
                         .await
                         .is_err()
                     {
-                        doctor_errors.push("failed to send health request".to_string());
+                        let message = "failed to send health request".to_string();
+                        health_error = Some(message.clone());
+                        doctor_errors.push(message);
                     } else if let Ok(health_response) =
                         wait_for_response(&mut socket, "doctor-health").await
                     {
@@ -254,32 +262,107 @@ pub async fn run_gateway_doctor(config: GatewayDoctorConfig) -> Result<Value, St
                             .and_then(|value| value.as_bool())
                             .unwrap_or(false);
                         if !health_ok {
-                            doctor_errors.push(
-                                health_response
-                                    .get("error")
-                                    .and_then(|value| value.get("message"))
-                                    .and_then(|value| value.as_str())
-                                    .unwrap_or("health check failed")
-                                    .to_string(),
-                            );
+                            let message = health_response
+                                .get("error")
+                                .and_then(|value| value.get("message"))
+                                .and_then(|value| value.as_str())
+                                .unwrap_or("health check failed")
+                                .to_string();
+                            health_error = Some(message.clone());
+                            doctor_errors.push(message);
                         }
+                    } else {
+                        let message = "missing health response from gateway".to_string();
+                        health_error = Some(message.clone());
+                        doctor_errors.push(message);
                     }
                 }
             } else {
-                doctor_errors.push("missing connect response from gateway".to_string());
+                let message = "missing connect response from gateway".to_string();
+                connect_error = Some(message.clone());
+                doctor_errors.push(message);
             }
             let _ = socket.close(None).await;
         }
-        Ok(Err(err)) => doctor_errors.push(format!("websocket connect failed: {err}")),
-        Err(_) => doctor_errors.push("websocket connect timed out".to_string()),
+        Ok(Err(err)) => {
+            let message = format!("websocket connect failed: {err}");
+            ws_error = Some(message.clone());
+            doctor_errors.push(message);
+        }
+        Err(_) => {
+            let message = "websocket connect timed out".to_string();
+            ws_error = Some(message.clone());
+            doctor_errors.push(message);
+        }
     }
 
-    let ok = plugin_home_ok && trust_policy_ok && ws_ok && connect_ok && health_ok;
+    checks.push(build_doctor_check(
+        "plugin_home",
+        plugin_home_ok,
+        if plugin_home_ok {
+            format!(
+                "plugin home exists: {}",
+                config.plugin_home.to_string_lossy()
+            )
+        } else {
+            format!(
+                "plugin home is missing: {}",
+                config.plugin_home.to_string_lossy()
+            )
+        },
+        "create the plugin home and install required plugins, for example: scripts/kelvin-setup.sh --force",
+    ));
+    checks.push(build_doctor_check(
+        "trust_policy",
+        trust_policy_parse_ok,
+        if trust_policy_parse_ok {
+            format!(
+                "trust policy is present and valid JSON: {}",
+                config.trust_policy_path.to_string_lossy()
+            )
+        } else {
+            format!(
+                "trust policy missing or invalid JSON: {}",
+                config.trust_policy_path.to_string_lossy()
+            )
+        },
+        "install plugins again to refresh trust policy, or provide --trust-policy <path> with a valid trusted_publishers.json",
+    ));
+    checks.push(build_doctor_check(
+        "websocket_connect",
+        ws_ok,
+        ws_error.unwrap_or_else(|| "gateway websocket endpoint reachable".to_string()),
+        "start the gateway daemon and verify endpoint/token, for example: scripts/kelvin-gateway-daemon.sh start",
+    ));
+    checks.push(build_doctor_check(
+        "gateway_connect_handshake",
+        connect_ok,
+        connect_error.unwrap_or_else(|| "gateway connect handshake succeeded".to_string()),
+        "verify gateway auth token and connect method parameters, then rerun scripts/kelvin-doctor.sh",
+    ));
+    checks.push(build_doctor_check(
+        "gateway_health",
+        health_ok,
+        health_error.unwrap_or_else(|| "gateway health check succeeded".to_string()),
+        "inspect daemon logs and runtime state (scripts/kelvin-gateway-daemon.sh logs), then fix reported runtime errors",
+    ));
+
+    let failed = checks
+        .iter()
+        .filter(|item| item.get("status") != Some(&json!("pass")))
+        .count();
+    let ok = failed == 0;
     Ok(json!({
         "ok": ok,
-        "checks": {
+        "summary": {
+            "passed": checks.len().saturating_sub(failed),
+            "failed": failed,
+            "checked_at_ms": now_ms()
+        },
+        "checks": checks,
+        "legacy_checks": {
             "plugin_home_ok": plugin_home_ok,
-            "trust_policy_ok": trust_policy_ok,
+            "trust_policy_ok": trust_policy_parse_ok,
             "websocket_connect_ok": ws_ok,
             "connect_ok": connect_ok,
             "health_ok": health_ok
@@ -291,6 +374,16 @@ pub async fn run_gateway_doctor(config: GatewayDoctorConfig) -> Result<Value, St
         },
         "errors": doctor_errors
     }))
+}
+
+fn build_doctor_check(id: &str, ok: bool, message: String, remediation: &str) -> Value {
+    json!({
+        "id": id,
+        "status": if ok { "pass" } else { "fail" },
+        "severity": if ok { "info" } else { "error" },
+        "message": message,
+        "remediation": remediation
+    })
 }
 
 async fn wait_for_response(
@@ -771,6 +864,7 @@ fn send_frame(
 mod tests {
     use super::*;
     use std::collections::HashSet;
+    use std::time::{SystemTime, UNIX_EPOCH};
 
     #[test]
     fn idempotency_cache_evicts_oldest_entry() {
@@ -839,6 +933,48 @@ mod tests {
         );
         for method in methods {
             assert!(is_supported_method(method), "missing method from allowlist");
+        }
+    }
+
+    #[tokio::test]
+    async fn doctor_report_is_machine_readable_and_actionable() {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_millis())
+            .unwrap_or_default();
+        let temp_root = std::env::temp_dir().join(format!("kelvin-doctor-test-{millis}"));
+        let plugin_home = temp_root.join("plugins");
+        std::fs::create_dir_all(&plugin_home).expect("create plugin home");
+        let trust_policy_path = temp_root.join("trusted_publishers.json");
+        std::fs::write(
+            &trust_policy_path,
+            b"{\"require_signature\":true,\"publishers\":[]}",
+        )
+        .expect("write trust policy");
+
+        let report = run_gateway_doctor(GatewayDoctorConfig {
+            endpoint: "ws://127.0.0.1:1".to_string(),
+            auth_token: None,
+            plugin_home,
+            trust_policy_path,
+            timeout_ms: 250,
+        })
+        .await
+        .expect("doctor report");
+
+        assert!(report.get("ok").and_then(|item| item.as_bool()).is_some());
+        let checks = report
+            .get("checks")
+            .and_then(|item| item.as_array())
+            .expect("checks array");
+        assert!(!checks.is_empty(), "checks should not be empty");
+        for check in checks {
+            assert!(check.get("id").is_some(), "missing check id");
+            assert!(check.get("status").is_some(), "missing check status");
+            assert!(
+                check.get("remediation").is_some(),
+                "missing remediation hint"
+            );
         }
     }
 }

@@ -30,7 +30,7 @@ tonic.workspace = true
 uuid.workspace = true
 wasmparser.workspace = true
 wasmtime.workspace = true
+wat = "1"
 
 [dev-dependencies]
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }
-wat = "1"

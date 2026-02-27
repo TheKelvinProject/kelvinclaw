@@ -6,13 +6,17 @@ source "${ROOT_DIR}/scripts/lib/rust-toolchain-path.sh"
 PROMPT="${1:-hello kelvin}"
 TIMEOUT_MS="${KELVIN_TRY_TIMEOUT_MS:-5000}"
 MODE="${KELVIN_TRY_MODE:-auto}" # auto | local | docker
-TARGET_DIR="${KELVIN_TRY_TARGET_DIR:-${ROOT_DIR}/target/try-kelvin-cli}"
+TARGET_DIR="${KELVIN_TRY_TARGET_DIR:-${ROOT_DIR}/target}"
 PLUGIN_HOME="${KELVIN_PLUGIN_HOME:-${ROOT_DIR}/.kelvin/plugins}"
 TRUST_POLICY_PATH="${KELVIN_TRUST_POLICY_PATH:-${ROOT_DIR}/.kelvin/trusted_publishers.json}"
 DOCKER_IMAGE="${KELVIN_TRY_DOCKER_IMAGE:-rust:1.93.1-bookworm}"
 PLUGIN_INDEX_URL="${KELVIN_PLUGIN_INDEX_URL:-https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/index.json}"
 
 ensure_cli_plugin() {
+  if [[ -d "${PLUGIN_HOME}/kelvin.cli/current" ]]; then
+    echo "[try-kelvin] kelvin_cli plugin already installed: ${PLUGIN_HOME}/kelvin.cli/current"
+    return 0
+  fi
   echo "[try-kelvin] ensuring kelvin_cli WASM plugin is installed"
   KELVIN_PLUGIN_HOME="${PLUGIN_HOME}" \
   KELVIN_TRUST_POLICY_PATH="${TRUST_POLICY_PATH}" \
@@ -33,6 +37,10 @@ ensure_cli_plugin_docker() {
     "${DOCKER_IMAGE}" \
     bash -lc '
       set -euo pipefail
+      if [[ -d "$KELVIN_PLUGIN_HOME/kelvin.cli/current" ]]; then
+        echo "[try-kelvin] kelvin_cli plugin already installed: $KELVIN_PLUGIN_HOME/kelvin.cli/current"
+        exit 0
+      fi
       if ! command -v jq >/dev/null 2>&1; then
         apt-get update -qq >/dev/null
         apt-get install -y --no-install-recommends jq >/dev/null
