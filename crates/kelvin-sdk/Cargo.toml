@@ -17,6 +17,8 @@ tokio.workspace = true
 uuid.workspace = true
 sha2.workspace = true
 semver.workspace = true
+reqwest.workspace = true
+url.workspace = true
 kelvin-core = { path = "../kelvin-core" }
 kelvin-brain = { path = "../kelvin-brain" }
 kelvin-memory = { path = "../kelvin-memory" }

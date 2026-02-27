@@ -13,6 +13,7 @@ serde.workspace = true
 serde_json.workspace = true
 thiserror.workspace = true
 tonic.workspace = true
+tonic-prost.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
@@ -20,4 +21,4 @@ prost-types.workspace = true
 
 [build-dependencies]
 protoc-bin-vendored.workspace = true
-tonic-build.workspace = true
+tonic-prost-build.workspace = true

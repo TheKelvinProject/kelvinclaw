@@ -84,9 +84,9 @@ fn generate_test_tls_material() -> TestTlsMaterial {
     TestTlsMaterial {
         ca_pem: client.cert.pem(),
         server_cert_pem: server.cert.pem(),
-        server_key_pem: server.key_pair.serialize_pem(),
+        server_key_pem: server.signing_key.serialize_pem(),
         client_cert_pem: client.cert.pem(),
-        client_key_pem: client.key_pair.serialize_pem(),
+        client_key_pem: client.signing_key.serialize_pem(),
     }
 }
 
