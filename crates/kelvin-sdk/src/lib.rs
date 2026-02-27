@@ -1,10 +1,13 @@
 use std::collections::HashMap;
+use std::fs::{self, File};
+use std::io::{BufRead, BufReader, Write};
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use serde_json::json;
+use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, RwLock};
 use tokio::time::{sleep, Duration};
 use uuid::Uuid;
@@ -13,8 +16,8 @@ use kelvin_brain::{load_installed_plugins_default, EchoModelProvider, KelvinBrai
 use kelvin_core::{
     now_ms, AgentEvent, AgentRunRequest, AgentWaitResult, CoreRuntime, EventSink, KelvinError,
     KelvinResult, MemorySearchManager, ModelInput, ModelOutput, ModelProvider,
-    PluginSecurityPolicy, RunOutcome, RunState, SessionDescriptor, SessionMessage, SessionStore,
-    Tool, ToolCallInput, ToolCallResult, ToolRegistry,
+    PluginSecurityPolicy, RunOutcome, RunState, SessionDescriptor, SessionMessage, SessionRole,
+    SessionStore, Tool, ToolCallInput, ToolCallResult, ToolRegistry,
 };
 #[cfg(any(not(feature = "memory_rpc"), feature = "memory_legacy_fallback"))]
 use kelvin_memory::MemoryBackendKind;
@@ -120,6 +123,10 @@ pub struct KelvinSdkRuntimeConfig {
     pub model_provider: KelvinSdkModelSelection,
     pub require_cli_plugin_tool: bool,
     pub emit_stdout_events: bool,
+    pub state_dir: Option<PathBuf>,
+    pub persist_runs: bool,
+    pub max_session_history_messages: usize,
+    pub compact_to_messages: usize,
 }
 
 impl KelvinSdkRuntimeConfig {
@@ -136,6 +143,10 @@ impl KelvinSdkRuntimeConfig {
             model_provider: config.model_provider.clone(),
             require_cli_plugin_tool: true,
             emit_stdout_events: true,
+            state_dir: Some(config.workspace_dir.join(".kelvin").join("state")),
+            persist_runs: true,
+            max_session_history_messages: 128,
+            compact_to_messages: 64,
         }
     }
 }
@@ -172,20 +183,297 @@ pub struct KelvinSdkAcceptedRun {
     pub cli_plugin_preflight: Option<String>,
 }
 
-#[derive(Default)]
-struct InMemorySessionStore {
-    sessions: RwLock<HashMap<String, SessionDescriptor>>,
-    messages: RwLock<HashMap<String, Vec<SessionMessage>>>,
+#[derive(Debug, Clone)]
+struct RuntimePersistence {
+    state_dir: Option<PathBuf>,
+    persist_runs: bool,
+    max_session_history_messages: usize,
+    compact_to_messages: usize,
+}
+
+impl RuntimePersistence {
+    fn new(
+        state_dir: Option<PathBuf>,
+        persist_runs: bool,
+        max_session_history_messages: usize,
+        compact_to_messages: usize,
+    ) -> KelvinResult<Self> {
+        if max_session_history_messages < 4 {
+            return Err(KelvinError::InvalidInput(
+                "max_session_history_messages must be >= 4".to_string(),
+            ));
+        }
+        if compact_to_messages < 2 {
+            return Err(KelvinError::InvalidInput(
+                "compact_to_messages must be >= 2".to_string(),
+            ));
+        }
+        if compact_to_messages >= max_session_history_messages {
+            return Err(KelvinError::InvalidInput(
+                "compact_to_messages must be smaller than max_session_history_messages".to_string(),
+            ));
+        }
+
+        let persistence = Self {
+            state_dir,
+            persist_runs,
+            max_session_history_messages,
+            compact_to_messages,
+        };
+        persistence.ensure_layout()?;
+        Ok(persistence)
+    }
+
+    fn sessions_dir(&self) -> Option<PathBuf> {
+        self.state_dir.as_ref().map(|root| root.join("sessions"))
+    }
+
+    fn runs_dir(&self) -> Option<PathBuf> {
+        self.state_dir.as_ref().map(|root| root.join("runs"))
+    }
+
+    fn ensure_layout(&self) -> KelvinResult<()> {
+        if let Some(root) = &self.state_dir {
+            fs::create_dir_all(root.join("sessions"))
+                .map_err(|err| KelvinError::Io(format!("create sessions dir: {err}")))?;
+            fs::create_dir_all(root.join("runs"))
+                .map_err(|err| KelvinError::Io(format!("create runs dir: {err}")))?;
+        }
+        Ok(())
+    }
+
+    fn key_hex(value: &str) -> String {
+        let mut hasher = Sha256::new();
+        hasher.update(value.as_bytes());
+        let digest = hasher.finalize();
+        let mut out = String::with_capacity(digest.len() * 2);
+        for byte in digest {
+            out.push_str(&format!("{byte:02x}"));
+        }
+        out
+    }
+
+    fn session_dir_for(&self, session_id: &str) -> Option<PathBuf> {
+        self.sessions_dir()
+            .map(|dir| dir.join(Self::key_hex(session_id)))
+    }
+
+    fn run_file_for(&self, run_id: &str) -> Option<PathBuf> {
+        self.runs_dir()
+            .map(|dir| dir.join(format!("{}.json", Self::key_hex(run_id))))
+    }
+
+    fn load_session_data(&self) -> KelvinResult<(SessionDescriptorMap, SessionMessagesMap)> {
+        let mut sessions: SessionDescriptorMap = HashMap::new();
+        let mut messages: SessionMessagesMap = HashMap::new();
+        let Some(sessions_dir) = self.sessions_dir() else {
+            return Ok((sessions, messages));
+        };
+        if !sessions_dir.is_dir() {
+            return Ok((sessions, messages));
+        }
+
+        let entries = fs::read_dir(&sessions_dir)
+            .map_err(|err| KelvinError::Io(format!("read sessions dir: {err}")))?;
+        for entry in entries {
+            let entry =
+                entry.map_err(|err| KelvinError::Io(format!("read session entry: {err}")))?;
+            if !entry
+                .file_type()
+                .map_err(|err| KelvinError::Io(format!("read session entry type: {err}")))?
+                .is_dir()
+            {
+                continue;
+            }
+            let descriptor_path = entry.path().join("descriptor.json");
+            if !descriptor_path.is_file() {
+                continue;
+            }
+            let descriptor_bytes = fs::read(&descriptor_path)
+                .map_err(|err| KelvinError::Io(format!("read descriptor file: {err}")))?;
+            let descriptor: SessionDescriptor = serde_json::from_slice(&descriptor_bytes)
+                .map_err(|err| KelvinError::Io(format!("parse descriptor file: {err}")))?;
+
+            let messages_path = entry.path().join("messages.jsonl");
+            let session_messages = if messages_path.is_file() {
+                self.read_messages_file(&messages_path)?
+            } else {
+                Vec::new()
+            };
+
+            messages.insert(descriptor.session_id.clone(), session_messages);
+            sessions.insert(descriptor.session_id.clone(), descriptor);
+        }
+
+        Ok((sessions, messages))
+    }
+
+    fn read_messages_file(&self, path: &PathBuf) -> KelvinResult<Vec<SessionMessage>> {
+        let file = File::open(path)
+            .map_err(|err| KelvinError::Io(format!("open messages file: {err}")))?;
+        let reader = BufReader::new(file);
+        let mut out = Vec::new();
+        for line in reader.lines() {
+            let line = line.map_err(|err| KelvinError::Io(format!("read messages line: {err}")))?;
+            if line.trim().is_empty() {
+                continue;
+            }
+            let message: SessionMessage = serde_json::from_str(&line)
+                .map_err(|err| KelvinError::Io(format!("parse message line: {err}")))?;
+            out.push(message);
+        }
+        Ok(out)
+    }
+
+    fn persist_session_descriptor(&self, session: &SessionDescriptor) -> KelvinResult<()> {
+        let Some(session_dir) = self.session_dir_for(&session.session_id) else {
+            return Ok(());
+        };
+        fs::create_dir_all(&session_dir)
+            .map_err(|err| KelvinError::Io(format!("create session dir: {err}")))?;
+        let descriptor_path = session_dir.join("descriptor.json");
+        let bytes = serde_json::to_vec_pretty(session)
+            .map_err(|err| KelvinError::Io(format!("serialize descriptor: {err}")))?;
+        write_atomic(&descriptor_path, &bytes)
+    }
+
+    fn persist_session_messages(
+        &self,
+        session_id: &str,
+        messages: &[SessionMessage],
+    ) -> KelvinResult<()> {
+        let Some(session_dir) = self.session_dir_for(session_id) else {
+            return Ok(());
+        };
+        fs::create_dir_all(&session_dir)
+            .map_err(|err| KelvinError::Io(format!("create session dir: {err}")))?;
+        let mut bytes = Vec::new();
+        for message in messages {
+            let line = serde_json::to_vec(message)
+                .map_err(|err| KelvinError::Io(format!("serialize message: {err}")))?;
+            bytes.extend_from_slice(&line);
+            bytes.push(b'\n');
+        }
+        write_atomic(&session_dir.join("messages.jsonl"), &bytes)
+    }
+
+    fn persist_run_record(&self, run_id: &str, record: serde_json::Value) -> KelvinResult<()> {
+        if !self.persist_runs {
+            return Ok(());
+        }
+        let Some(path) = self.run_file_for(run_id) else {
+            return Ok(());
+        };
+
+        let mut merged = if path.is_file() {
+            let current = fs::read(&path)
+                .map_err(|err| KelvinError::Io(format!("read run record: {err}")))?;
+            serde_json::from_slice::<serde_json::Value>(&current).unwrap_or_else(|_| json!({}))
+        } else {
+            json!({})
+        };
+
+        if !merged.is_object() {
+            merged = json!({});
+        }
+        if let Some(object) = merged.as_object_mut() {
+            object.insert("run_id".to_string(), json!(run_id));
+            object.insert("updated_at_ms".to_string(), json!(now_ms()));
+            if let Some(incoming) = record.as_object() {
+                for (key, value) in incoming {
+                    object.insert(key.clone(), value.clone());
+                }
+            }
+        }
+
+        let bytes = serde_json::to_vec_pretty(&merged)
+            .map_err(|err| KelvinError::Io(format!("serialize run record: {err}")))?;
+        write_atomic(&path, &bytes)
+    }
+}
+
+fn write_atomic(path: &PathBuf, bytes: &[u8]) -> KelvinResult<()> {
+    let tmp_path = path.with_extension("tmp");
+    let mut file = File::create(&tmp_path)
+        .map_err(|err| KelvinError::Io(format!("create temp file: {err}")))?;
+    file.write_all(bytes)
+        .map_err(|err| KelvinError::Io(format!("write temp file: {err}")))?;
+    file.sync_all()
+        .map_err(|err| KelvinError::Io(format!("sync temp file: {err}")))?;
+    fs::rename(&tmp_path, path).map_err(|err| KelvinError::Io(format!("replace file: {err}")))?;
+    Ok(())
+}
+
+struct FileBackedSessionStore {
+    sessions: RwLock<SessionDescriptorMap>,
+    messages: RwLock<SessionMessagesMap>,
+    persistence: RuntimePersistence,
+}
+
+impl FileBackedSessionStore {
+    fn load(persistence: RuntimePersistence) -> KelvinResult<Self> {
+        let (sessions, messages) = persistence.load_session_data()?;
+        Ok(Self {
+            sessions: RwLock::new(sessions),
+            messages: RwLock::new(messages),
+            persistence,
+        })
+    }
+
+    fn compact_messages(&self, session_id: &str, messages: &mut Vec<SessionMessage>) {
+        if messages.len() <= self.persistence.max_session_history_messages {
+            return;
+        }
+        let drop_count = messages
+            .len()
+            .saturating_sub(self.persistence.compact_to_messages);
+        let dropped_slice = &messages[..drop_count];
+        let mut role_counts = HashMap::<String, usize>::new();
+        for message in dropped_slice {
+            let role = match message.role {
+                SessionRole::User => "user",
+                SessionRole::Assistant => "assistant",
+                SessionRole::Tool => "tool",
+                SessionRole::System => "system",
+            };
+            *role_counts.entry(role.to_string()).or_default() += 1;
+        }
+
+        let mut role_parts = role_counts
+            .iter()
+            .map(|(role, count)| format!("{role}:{count}"))
+            .collect::<Vec<_>>();
+        role_parts.sort();
+        let summary = SessionMessage {
+            role: SessionRole::System,
+            content: format!(
+                "history compacted for session '{session_id}'; dropped {drop_count} messages ({})",
+                role_parts.join(",")
+            ),
+            metadata: json!({
+                "compacted": true,
+                "dropped_messages": drop_count,
+                "policy": {
+                    "max_session_history_messages": self.persistence.max_session_history_messages,
+                    "compact_to_messages": self.persistence.compact_to_messages
+                }
+            }),
+        };
+        let mut tail = messages.split_off(drop_count);
+        messages.clear();
+        messages.push(summary);
+        messages.append(&mut tail);
+    }
 }
 
 #[async_trait]
-impl SessionStore for InMemorySessionStore {
+impl SessionStore for FileBackedSessionStore {
     async fn upsert_session(&self, session: SessionDescriptor) -> KelvinResult<()> {
         self.sessions
             .write()
             .await
-            .insert(session.session_id.clone(), session);
-        Ok(())
+            .insert(session.session_id.clone(), session.clone());
+        self.persistence.persist_session_descriptor(&session)
     }
 
     async fn get_session(&self, session_id: &str) -> KelvinResult<Option<SessionDescriptor>> {
@@ -193,12 +481,15 @@ impl SessionStore for InMemorySessionStore {
     }
 
     async fn append_message(&self, session_id: &str, message: SessionMessage) -> KelvinResult<()> {
-        self.messages
-            .write()
-            .await
-            .entry(session_id.to_string())
-            .or_default()
-            .push(message);
+        let snapshot = {
+            let mut messages = self.messages.write().await;
+            let session_messages = messages.entry(session_id.to_string()).or_default();
+            session_messages.push(message);
+            self.compact_messages(session_id, session_messages);
+            session_messages.clone()
+        };
+        self.persistence
+            .persist_session_messages(session_id, &snapshot)?;
         Ok(())
     }
 
@@ -321,6 +612,8 @@ impl ToolRegistry for CombinedToolRegistry {
 
 type InstalledModelProviders = Vec<(String, Arc<dyn ModelProvider>)>;
 type LoadedInstalledPlugins = (Arc<dyn ToolRegistry>, InstalledModelProviders, usize);
+type SessionDescriptorMap = HashMap<String, SessionDescriptor>;
+type SessionMessagesMap = HashMap<String, Vec<SessionMessage>>;
 
 #[derive(Debug, Clone)]
 struct TimeTool;
@@ -443,11 +736,18 @@ pub struct KelvinSdkRuntime {
     cli_plugin_tool: Option<Arc<dyn Tool>>,
     loaded_installed_plugins: usize,
     event_tx: broadcast::Sender<AgentEvent>,
+    persistence: RuntimePersistence,
 }
 
 impl KelvinSdkRuntime {
     pub async fn initialize(config: KelvinSdkRuntimeConfig) -> KelvinResult<Self> {
-        let session_store = Arc::new(InMemorySessionStore::default());
+        let persistence = RuntimePersistence::new(
+            config.state_dir.clone(),
+            config.persist_runs,
+            config.max_session_history_messages,
+            config.compact_to_messages,
+        )?;
+        let session_store = Arc::new(FileBackedSessionStore::load(persistence.clone())?);
         let (event_tx, _) = broadcast::channel(1_024);
         let event_sink: Arc<dyn EventSink> = if config.emit_stdout_events {
             Arc::new(StdoutEventSink)
@@ -554,6 +854,7 @@ impl KelvinSdkRuntime {
             cli_plugin_tool,
             loaded_installed_plugins,
             event_tx,
+            persistence,
         })
     }
 
@@ -602,6 +903,9 @@ impl KelvinSdkRuntime {
             None
         };
 
+        let prompt_length = prompt.len();
+        let session_id_for_record = session_id.clone();
+        let workspace_dir_for_record = workspace_dir.clone();
         let accepted = self
             .runtime
             .submit(AgentRunRequest {
@@ -616,6 +920,16 @@ impl KelvinSdkRuntime {
             })
             .await?;
 
+        self.persistence.persist_run_record(
+            &accepted.run_id,
+            json!({
+                "accepted_at_ms": accepted.accepted_at_ms,
+                "session_id": session_id_for_record,
+                "workspace_dir": workspace_dir_for_record.to_string_lossy().to_string(),
+                "prompt_length": prompt_length,
+            }),
+        )?;
+
         Ok(KelvinSdkAcceptedRun {
             run_id: accepted.run_id,
             accepted_at_ms: accepted.accepted_at_ms,
@@ -624,11 +938,17 @@ impl KelvinSdkRuntime {
     }
 
     pub async fn state(&self, run_id: &str) -> KelvinResult<RunState> {
-        self.runtime.state(run_id).await
+        let state = self.runtime.state(run_id).await?;
+        self.persistence
+            .persist_run_record(run_id, json!({ "last_state": state }))?;
+        Ok(state)
     }
 
     pub async fn wait(&self, run_id: &str, timeout_ms: u64) -> KelvinResult<AgentWaitResult> {
-        self.runtime.wait(run_id, timeout_ms).await
+        let wait = self.runtime.wait(run_id, timeout_ms).await?;
+        self.persistence
+            .persist_run_record(run_id, json!({ "last_wait": wait }))?;
+        Ok(wait)
     }
 
     pub async fn wait_for_outcome(
@@ -636,7 +956,23 @@ impl KelvinSdkRuntime {
         run_id: &str,
         timeout_ms: u64,
     ) -> KelvinResult<RunOutcome> {
-        self.runtime.wait_for_outcome(run_id, timeout_ms).await
+        let outcome = self.runtime.wait_for_outcome(run_id, timeout_ms).await?;
+        let persisted_outcome = match &outcome {
+            RunOutcome::Completed(result) => json!({
+                "status": "completed",
+                "result": result,
+            }),
+            RunOutcome::Failed(error) => json!({
+                "status": "failed",
+                "error": error,
+            }),
+            RunOutcome::Timeout => json!({
+                "status": "timeout",
+            }),
+        };
+        self.persistence
+            .persist_run_record(run_id, json!({ "last_outcome": persisted_outcome }))?;
+        Ok(outcome)
     }
 }
 
@@ -749,7 +1085,8 @@ pub async fn run_with_sdk(config: KelvinSdkConfig) -> KelvinResult<KelvinRunSumm
 
 #[cfg(test)]
 mod tests {
-    use std::path::Path;
+    use std::fs;
+    use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::{SystemTime, UNIX_EPOCH};
@@ -757,7 +1094,7 @@ mod tests {
     use async_trait::async_trait;
     use base64::Engine as _;
     use ed25519_dalek::{Signer, SigningKey};
-    use kelvin_core::{KelvinError, ModelInput, ModelOutput, ModelProvider};
+    use kelvin_core::{KelvinError, ModelInput, ModelOutput, ModelProvider, RunOutcome};
     use mockito::Server;
     use serde_json::json;
     use sha2::{Digest, Sha256};
@@ -1337,5 +1674,141 @@ mod tests {
         assert!(matches!(err, KelvinError::InvalidInput(_)));
         assert_eq!(primary.calls(), 1);
         assert_eq!(secondary.calls(), 0);
+    }
+
+    fn find_first_messages_file(state_dir: &Path) -> Option<PathBuf> {
+        let sessions_dir = state_dir.join("sessions");
+        if !sessions_dir.is_dir() {
+            return None;
+        }
+        let entries = fs::read_dir(sessions_dir).ok()?;
+        for entry in entries {
+            let entry = entry.ok()?;
+            let path = entry.path().join("messages.jsonl");
+            if path.is_file() {
+                return Some(path);
+            }
+        }
+        None
+    }
+
+    fn find_run_record(state_dir: &Path, run_id: &str) -> Option<serde_json::Value> {
+        let runs_dir = state_dir.join("runs");
+        if !runs_dir.is_dir() {
+            return None;
+        }
+        let entries = fs::read_dir(runs_dir).ok()?;
+        for entry in entries {
+            let entry = entry.ok()?;
+            if !entry.path().is_file() {
+                continue;
+            }
+            let bytes = fs::read(entry.path()).ok()?;
+            let value: serde_json::Value = serde_json::from_slice(&bytes).ok()?;
+            if value.get("run_id") == Some(&json!(run_id)) {
+                return Some(value);
+            }
+        }
+        None
+    }
+
+    #[tokio::test]
+    async fn sdk_runtime_persists_run_records_and_outcomes() {
+        let runtime_workspace = unique_workspace();
+        let state_dir = runtime_workspace.join(".kelvin").join("state");
+        let runtime = super::KelvinSdkRuntime::initialize(super::KelvinSdkRuntimeConfig {
+            workspace_dir: runtime_workspace.clone(),
+            default_session_id: "persist-session".to_string(),
+            memory_mode: super::KelvinCliMemoryMode::Fallback,
+            default_timeout_ms: 3_000,
+            default_system_prompt: None,
+            core_version: "0.1.0".to_string(),
+            plugin_security_policy: Default::default(),
+            load_installed_plugins: false,
+            model_provider: super::KelvinSdkModelSelection::Echo,
+            require_cli_plugin_tool: false,
+            emit_stdout_events: false,
+            state_dir: Some(state_dir.clone()),
+            persist_runs: true,
+            max_session_history_messages: 128,
+            compact_to_messages: 64,
+        })
+        .await
+        .expect("initialize runtime");
+
+        let accepted = runtime
+            .submit(super::KelvinSdkRunRequest {
+                prompt: "persist me".to_string(),
+                session_id: Some("persist-session".to_string()),
+                workspace_dir: Some(runtime_workspace),
+                timeout_ms: Some(3_000),
+                system_prompt: None,
+                memory_query: None,
+                run_id: None,
+            })
+            .await
+            .expect("submit");
+        let outcome = runtime
+            .wait_for_outcome(&accepted.run_id, 5_000)
+            .await
+            .expect("wait outcome");
+        assert!(matches!(outcome, RunOutcome::Completed(_)));
+
+        let run_record =
+            find_run_record(&state_dir, &accepted.run_id).expect("run record should exist");
+        assert_eq!(run_record["run_id"], json!(accepted.run_id));
+        assert_eq!(run_record["last_outcome"]["status"], json!("completed"));
+    }
+
+    #[tokio::test]
+    async fn sdk_runtime_compacts_session_history_by_policy() {
+        let runtime_workspace = unique_workspace();
+        let state_dir = runtime_workspace.join(".kelvin").join("state");
+        let runtime = super::KelvinSdkRuntime::initialize(super::KelvinSdkRuntimeConfig {
+            workspace_dir: runtime_workspace.clone(),
+            default_session_id: "compact-session".to_string(),
+            memory_mode: super::KelvinCliMemoryMode::Fallback,
+            default_timeout_ms: 3_000,
+            default_system_prompt: None,
+            core_version: "0.1.0".to_string(),
+            plugin_security_policy: Default::default(),
+            load_installed_plugins: false,
+            model_provider: super::KelvinSdkModelSelection::Echo,
+            require_cli_plugin_tool: false,
+            emit_stdout_events: false,
+            state_dir: Some(state_dir.clone()),
+            persist_runs: false,
+            max_session_history_messages: 6,
+            compact_to_messages: 3,
+        })
+        .await
+        .expect("initialize runtime");
+
+        for idx in 0..6 {
+            let accepted = runtime
+                .submit(super::KelvinSdkRunRequest {
+                    prompt: format!("compaction message {idx}"),
+                    session_id: Some("compact-session".to_string()),
+                    workspace_dir: Some(runtime_workspace.clone()),
+                    timeout_ms: Some(3_000),
+                    system_prompt: None,
+                    memory_query: None,
+                    run_id: None,
+                })
+                .await
+                .expect("submit");
+            let _ = runtime
+                .wait_for_outcome(&accepted.run_id, 5_000)
+                .await
+                .expect("wait outcome");
+        }
+
+        let messages_path = find_first_messages_file(&state_dir).expect("messages file");
+        let content = fs::read_to_string(messages_path).expect("read messages");
+        let lines = content
+            .lines()
+            .filter(|line| !line.trim().is_empty())
+            .collect::<Vec<_>>();
+        assert!(lines.len() <= 6);
     }
 }

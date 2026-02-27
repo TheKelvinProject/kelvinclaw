@@ -3,7 +3,7 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use kelvin_core::PluginSecurityPolicy;
-use kelvin_gateway::{run_gateway, GatewayConfig};
+use kelvin_gateway::{run_gateway, run_gateway_doctor, GatewayConfig, GatewayDoctorConfig};
 use kelvin_sdk::{KelvinCliMemoryMode, KelvinSdkModelSelection, KelvinSdkRuntimeConfig};
 
 #[derive(Debug, Clone)]
@@ -16,10 +16,15 @@ struct CliConfig {
     model_provider: KelvinSdkModelSelection,
     load_installed_plugins: bool,
     require_cli_plugin_tool: bool,
+    doctor_mode: bool,
+    doctor_endpoint: String,
+    doctor_plugin_home: PathBuf,
+    doctor_trust_policy_path: PathBuf,
+    doctor_timeout_ms: u64,
 }
 
 fn usage() -> &'static str {
-    "Usage: kelvin-gateway [--bind <host:port>] [--token <token>] [--workspace <dir>] [--memory markdown|in-memory|fallback] [--timeout-ms <ms>] [--model-provider <plugin_id>] [--model-provider-failover <id1,id2,...>] [--failover-retries <n>] [--failover-backoff-ms <ms>] [--load-installed-plugins true|false] [--require-cli-plugin true|false]"
+    "Usage: kelvin-gateway [--bind <host:port>] [--token <token>] [--workspace <dir>] [--memory markdown|in-memory|fallback] [--timeout-ms <ms>] [--model-provider <plugin_id>] [--model-provider-failover <id1,id2,...>] [--failover-retries <n>] [--failover-backoff-ms <ms>] [--load-installed-plugins true|false] [--require-cli-plugin true|false] [--doctor] [--endpoint <ws://host:port>] [--plugin-home <path>] [--trust-policy <path>] [--doctor-timeout-ms <ms>]"
 }
 
 fn parse_bool(value: &str, flag: &str) -> Result<bool, String> {
@@ -42,6 +47,11 @@ fn parse_args() -> Result<CliConfig, String> {
     let mut model_provider = KelvinSdkModelSelection::Echo;
     let mut load_installed_plugins = true;
     let mut require_cli_plugin_tool = false;
+    let mut doctor_mode = false;
+    let mut doctor_endpoint = "ws://127.0.0.1:18789".to_string();
+    let mut doctor_timeout_ms = 5_000_u64;
+    let mut doctor_plugin_home = PathBuf::from(".kelvin/plugins");
+    let mut doctor_trust_policy_path = PathBuf::from(".kelvin/trusted_publishers.json");
     let mut failover_retries = 1_u8;
     let mut failover_backoff_ms = 100_u64;
     let mut pending_failover_ids: Option<Vec<String>> = None;
@@ -57,6 +67,34 @@ fn parse_args() -> Result<CliConfig, String> {
                 bind_addr = value
                     .parse::<SocketAddr>()
                     .map_err(|err| format!("invalid --bind value '{value}': {err}"))?;
+            }
+            "--doctor" => {
+                doctor_mode = true;
+            }
+            "--endpoint" => {
+                doctor_endpoint = args
+                    .next()
+                    .ok_or_else(|| "missing value for --endpoint".to_string())?;
+            }
+            "--plugin-home" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --plugin-home".to_string())?;
+                doctor_plugin_home = PathBuf::from(value);
+            }
+            "--trust-policy" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --trust-policy".to_string())?;
+                doctor_trust_policy_path = PathBuf::from(value);
+            }
+            "--doctor-timeout-ms" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --doctor-timeout-ms".to_string())?;
+                doctor_timeout_ms = value
+                    .parse::<u64>()
+                    .map_err(|_| "invalid numeric value for --doctor-timeout-ms".to_string())?;
             }
             "--token" => {
                 let value = args
@@ -165,6 +203,11 @@ fn parse_args() -> Result<CliConfig, String> {
         model_provider,
         load_installed_plugins,
         require_cli_plugin_tool,
+        doctor_mode,
+        doctor_endpoint,
+        doctor_plugin_home,
+        doctor_trust_policy_path,
+        doctor_timeout_ms,
     })
 }
 
@@ -176,11 +219,40 @@ fn selection_requires_network(policy: &KelvinSdkModelSelection) -> bool {
 async fn main() {
     match parse_args() {
         Ok(config) => {
+            if config.doctor_mode {
+                let report = run_gateway_doctor(GatewayDoctorConfig {
+                    endpoint: config.doctor_endpoint,
+                    auth_token: config.auth_token,
+                    plugin_home: config.doctor_plugin_home,
+                    trust_policy_path: config.doctor_trust_policy_path,
+                    timeout_ms: config.doctor_timeout_ms,
+                })
+                .await;
+                match report {
+                    Ok(value) => {
+                        println!(
+                            "{}",
+                            serde_json::to_string_pretty(&value)
+                                .unwrap_or_else(|_| value.to_string())
+                        );
+                        if !value.get("ok").and_then(|v| v.as_bool()).unwrap_or(false) {
+                            std::process::exit(1);
+                        }
+                    }
+                    Err(err) => {
+                        eprintln!("doctor error: {err}");
+                        std::process::exit(1);
+                    }
+                }
+                return;
+            }
+
             let mut plugin_security_policy = PluginSecurityPolicy::default();
             if selection_requires_network(&config.model_provider) {
                 plugin_security_policy.allow_network_egress = true;
             }
 
+            let state_dir = config.workspace_dir.join(".kelvin").join("state");
             let runtime_config = KelvinSdkRuntimeConfig {
                 workspace_dir: config.workspace_dir,
                 default_session_id: "main".to_string(),
@@ -193,6 +265,10 @@ async fn main() {
                 model_provider: config.model_provider,
                 require_cli_plugin_tool: config.require_cli_plugin_tool,
                 emit_stdout_events: false,
+                state_dir: Some(state_dir),
+                persist_runs: true,
+                max_session_history_messages: 128,
+                compact_to_messages: 64,
             };
             let gateway_config = GatewayConfig {
                 bind_addr: config.bind_addr,

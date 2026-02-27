@@ -9,6 +9,8 @@
 - typed request validation (`deny_unknown_fields`)
 - fail-closed unknown method handling
 - idempotency cache for side-effecting `agent` requests via required `request_id`
+- channel adapters are disabled unless explicitly enabled by environment config
+- Telegram channel defaults to pairing-required and host allowlist checks
 
 ## Envelope
 
@@ -64,6 +66,23 @@ First frame must be `connect`.
   - params: `run_id`
 - `agent.outcome` (alias: `run.outcome`)
   - params: `run_id`, optional `timeout_ms`
+- `channel.telegram.ingest`
+  - params: `delivery_id`, `chat_id`, `text`, optional `timeout_ms`
+- `channel.telegram.pair.approve`
+  - params: `code`
+- `channel.telegram.status`
+  - params: none
+
+## Telegram Channel Policy
+
+Telegram channel is configured only via environment variables and remains disabled unless
+`KELVIN_TELEGRAM_ENABLED=true`.
+
+- `KELVIN_TELEGRAM_API_BASE_URL` must be `https://api.telegram.org` by default
+- custom Telegram base URL requires `KELVIN_TELEGRAM_ALLOW_CUSTOM_BASE_URL=true`
+- pairing is enabled by default (`KELVIN_TELEGRAM_PAIRING_ENABLED=true`)
+- allowlist is optional (`KELVIN_TELEGRAM_ALLOW_CHAT_IDS=...`)
+- inbound dedupe, per-chat rate limits, and bounded retries are always applied
 
 ## Idempotency
 

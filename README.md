@@ -190,6 +190,15 @@ Methods available over the socket:
 - `agent.wait` / `run.wait`
 - `agent.state` / `run.state`
 - `agent.outcome` / `run.outcome`
+- `channel.telegram.ingest`
+- `channel.telegram.pair.approve`
+- `channel.telegram.status`
+
+Operational scripts:
+
+- `scripts/kelvin-gateway-daemon.sh start|stop|status|logs|health`
+- `scripts/kelvin-doctor.sh`
+- `scripts/kelvin-webchat.sh [port]`
 
 ## Runtime Container (No Rust Toolchain Required)
 

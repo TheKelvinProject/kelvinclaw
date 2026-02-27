@@ -34,6 +34,8 @@ RUN --mount=type=cache,target=/usr/local/cargo/registry \
 
 FROM deps AS full
 COPY . .
+# Keep memory usage bounded in Docker Desktop/link-heavy test builds.
+ENV CARGO_BUILD_JOBS=1
 RUN --mount=type=cache,target=/usr/local/cargo/registry \
     --mount=type=cache,target=/usr/local/cargo/git \
     --mount=type=cache,target=/work/target \

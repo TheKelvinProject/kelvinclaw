@@ -1,9 +1,13 @@
+mod channels;
+
 use std::collections::{HashMap, VecDeque};
+use std::fs;
 use std::net::SocketAddr;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
+use channels::{ChannelEngine, TelegramIngressRequest, TelegramPairApproveRequest};
 use futures_util::{SinkExt, StreamExt};
 use kelvin_core::{now_ms, KelvinError, RunOutcome};
 use kelvin_sdk::{
@@ -14,6 +18,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::{broadcast, mpsc, Mutex};
+use tokio::time::Duration;
+use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
 #[derive(Debug, Clone)]
@@ -29,6 +35,7 @@ struct GatewayState {
     auth_token: Option<String>,
     started_at: Instant,
     idempotency: Arc<Mutex<IdempotencyCache>>,
+    channels: Arc<Mutex<ChannelEngine>>,
 }
 
 #[derive(Debug, Clone)]
@@ -150,6 +157,142 @@ struct RunStateParams {
     run_id: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct GatewayDoctorConfig {
+    pub endpoint: String,
+    pub auth_token: Option<String>,
+    pub plugin_home: PathBuf,
+    pub trust_policy_path: PathBuf,
+    pub timeout_ms: u64,
+}
+
+pub async fn run_gateway_doctor(config: GatewayDoctorConfig) -> Result<Value, String> {
+    let plugin_home_ok = config.plugin_home.is_dir();
+    let trust_policy_ok = config.trust_policy_path.is_file()
+        && fs::read(&config.trust_policy_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .is_some();
+
+    let mut ws_ok = false;
+    let mut connect_ok = false;
+    let mut health_ok = false;
+    let mut doctor_errors = Vec::new();
+
+    let connect_result = tokio::time::timeout(
+        Duration::from_millis(config.timeout_ms.max(250)),
+        connect_async(config.endpoint.clone()),
+    )
+    .await;
+    match connect_result {
+        Ok(Ok((mut socket, _))) => {
+            ws_ok = true;
+            let connect_payload = json!({
+                "type": "req",
+                "id": "doctor-connect",
+                "method": "connect",
+                "params": {
+                    "auth": config.auth_token.as_ref().map(|token| json!({ "token": token })),
+                    "client_id": "kelvin-doctor"
+                }
+            });
+            if socket
+                .send(Message::Text(connect_payload.to_string()))
+                .await
+                .is_err()
+            {
+                doctor_errors.push("failed to send connect request".to_string());
+            } else if let Ok(response) = wait_for_response(&mut socket, "doctor-connect").await {
+                connect_ok = response
+                    .get("ok")
+                    .and_then(|value| value.as_bool())
+                    .unwrap_or(false);
+                if !connect_ok {
+                    doctor_errors.push(
+                        response
+                            .get("error")
+                            .and_then(|value| value.get("message"))
+                            .and_then(|value| value.as_str())
+                            .unwrap_or("connect failed")
+                            .to_string(),
+                    );
+                } else {
+                    let health_payload = json!({
+                        "type": "req",
+                        "id": "doctor-health",
+                        "method": "health",
+                        "params": {}
+                    });
+                    if socket
+                        .send(Message::Text(health_payload.to_string()))
+                        .await
+                        .is_err()
+                    {
+                        doctor_errors.push("failed to send health request".to_string());
+                    } else if let Ok(health_response) =
+                        wait_for_response(&mut socket, "doctor-health").await
+                    {
+                        health_ok = health_response
+                            .get("ok")
+                            .and_then(|value| value.as_bool())
+                            .unwrap_or(false);
+                        if !health_ok {
+                            doctor_errors.push(
+                                health_response
+                                    .get("error")
+                                    .and_then(|value| value.get("message"))
+                                    .and_then(|value| value.as_str())
+                                    .unwrap_or("health check failed")
+                                    .to_string(),
+                            );
+                        }
+                    }
+                }
+            } else {
+                doctor_errors.push("missing connect response from gateway".to_string());
+            }
+            let _ = socket.close(None).await;
+        }
+        Ok(Err(err)) => doctor_errors.push(format!("websocket connect failed: {err}")),
+        Err(_) => doctor_errors.push("websocket connect timed out".to_string()),
+    }
+
+    let ok = plugin_home_ok && trust_policy_ok && ws_ok && connect_ok && health_ok;
+    Ok(json!({
+        "ok": ok,
+        "checks": {
+            "plugin_home_ok": plugin_home_ok,
+            "trust_policy_ok": trust_policy_ok,
+            "websocket_connect_ok": ws_ok,
+            "connect_ok": connect_ok,
+            "health_ok": health_ok
+        },
+        "inputs": {
+            "endpoint": config.endpoint,
+            "plugin_home": config.plugin_home,
+            "trust_policy_path": config.trust_policy_path
+        },
+        "errors": doctor_errors
+    }))
+}
+
+async fn wait_for_response(
+    socket: &mut tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<TcpStream>>,
+    target_id: &str,
+) -> Result<Value, String> {
+    while let Some(message) = socket.next().await {
+        let message = message.map_err(|err| err.to_string())?;
+        let Message::Text(text) = message else {
+            continue;
+        };
+        let frame: Value = serde_json::from_str(&text).map_err(|err| err.to_string())?;
+        if frame.get("type") == Some(&json!("res")) && frame.get("id") == Some(&json!(target_id)) {
+            return Ok(frame);
+        }
+    }
+    Err("connection closed before response".to_string())
+}
+
 pub async fn run_gateway(config: GatewayConfig) -> Result<(), String> {
     let listener = TcpListener::bind(config.bind_addr)
         .await
@@ -169,12 +312,15 @@ pub async fn run_gateway_with_listener(
         .local_addr()
         .map_err(|err| format!("local_addr failed: {err}"))?;
     println!("kelvin-gateway listening on ws://{local_addr}");
+    let channels =
+        ChannelEngine::from_env().map_err(|err| format!("initialize channel engine: {err}"))?;
 
     let state = GatewayState {
         runtime,
         auth_token: auth_token.map(|value| value.trim().to_string()),
         started_at: Instant::now(),
         idempotency: Arc::new(Mutex::new(IdempotencyCache::new(2_048))),
+        channels: Arc::new(Mutex::new(channels)),
     };
 
     loop {
@@ -341,6 +487,9 @@ async fn handle_request(
             "status": "ok",
             "uptime_ms": state.started_at.elapsed().as_millis(),
             "loaded_installed_plugins": state.runtime.loaded_installed_plugins(),
+            "channels": {
+                "telegram": state.channels.lock().await.telegram_status(),
+            },
         })),
         "agent" | "run.submit" => {
             let params: AgentParams = parse_params(params, method)?;
@@ -384,6 +533,25 @@ async fn handle_request(
                     "status": "timeout",
                 })),
             }
+        }
+        "channel.telegram.ingest" => {
+            let params: TelegramIngressRequest = parse_params(params, method)?;
+            let mut channels = state.channels.lock().await;
+            channels
+                .telegram_ingest(&state.runtime, params)
+                .await
+                .map_err(map_kelvin_error)
+        }
+        "channel.telegram.pair.approve" => {
+            let params: TelegramPairApproveRequest = parse_params(params, method)?;
+            let mut channels = state.channels.lock().await;
+            channels
+                .telegram_approve_pairing(&params.code)
+                .map_err(map_kelvin_error)
+        }
+        "channel.telegram.status" => {
+            let channels = state.channels.lock().await;
+            Ok(channels.telegram_status())
         }
         _ => Err(GatewayErrorPayload {
             code: "method_not_found".to_string(),

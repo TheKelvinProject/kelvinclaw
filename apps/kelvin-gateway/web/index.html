@@ -1,0 +1,274 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>KelvinClaw Gateway UI</title>
+  <style>
+    :root {
+      --bg: #f5f7fb;
+      --panel: #ffffff;
+      --text: #13213a;
+      --muted: #5f6c86;
+      --accent: #006d77;
+      --danger: #b00020;
+      --border: #d9e0ef;
+    }
+    body {
+      margin: 0;
+      font-family: "JetBrains Mono", "Fira Mono", "Menlo", monospace;
+      color: var(--text);
+      background: radial-gradient(circle at top left, #eaf4ff, var(--bg));
+    }
+    .wrap {
+      max-width: 920px;
+      margin: 24px auto;
+      padding: 0 16px;
+      display: grid;
+      gap: 14px;
+    }
+    .card {
+      background: var(--panel);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      padding: 14px;
+    }
+    .row {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+    }
+    label {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 4px;
+    }
+    input, textarea, button {
+      font-family: inherit;
+      font-size: 13px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 8px;
+    }
+    textarea {
+      min-height: 80px;
+      width: 100%;
+      resize: vertical;
+    }
+    button {
+      background: var(--accent);
+      color: #fff;
+      border: 0;
+      cursor: pointer;
+    }
+    button.secondary {
+      background: #6b758d;
+    }
+    .log {
+      background: #0d1321;
+      color: #d4e2ff;
+      min-height: 280px;
+      border-radius: 10px;
+      padding: 10px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+    .muted {
+      color: var(--muted);
+      font-size: 12px;
+    }
+    .danger { color: var(--danger); }
+  </style>
+</head>
+<body>
+<div class="wrap">
+  <div class="card">
+    <h2>KelvinClaw Gateway</h2>
+    <div class="row">
+      <div>
+        <label for="endpoint">WebSocket Endpoint</label>
+        <input id="endpoint" value="ws://127.0.0.1:18789" />
+      </div>
+      <div>
+        <label for="token">Gateway Token (optional)</label>
+        <input id="token" type="password" autocomplete="off" />
+      </div>
+    </div>
+    <div style="margin-top: 8px; display: flex; gap: 8px;">
+      <button id="connectBtn">Connect</button>
+      <button id="healthBtn" class="secondary">Health</button>
+      <span id="status" class="muted">Disconnected</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Prompt</h3>
+    <label for="prompt">Prompt</label>
+    <textarea id="prompt">What is KelvinClaw?</textarea>
+    <div style="margin-top: 8px; display: flex; gap: 8px; align-items: center;">
+      <button id="sendBtn">Run Agent</button>
+      <span class="muted">Uses method <code>agent</code> + <code>agent.wait</code></span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h3>Event / Response Log</h3>
+    <div id="log" class="log"></div>
+  </div>
+</div>
+
+<script>
+(() => {
+  const endpointInput = document.getElementById("endpoint");
+  const tokenInput = document.getElementById("token");
+  const promptInput = document.getElementById("prompt");
+  const connectBtn = document.getElementById("connectBtn");
+  const healthBtn = document.getElementById("healthBtn");
+  const sendBtn = document.getElementById("sendBtn");
+  const status = document.getElementById("status");
+  const log = document.getElementById("log");
+
+  let ws = null;
+  let reqSeq = 0;
+  const inflight = new Map();
+
+  function appendLog(line, isError = false) {
+    const ts = new Date().toISOString();
+    const text = `[${ts}] ${line}\n`;
+    if (isError) {
+      log.innerHTML += `<span class="danger">${text.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</span>`;
+    } else {
+      log.textContent += text;
+    }
+    log.scrollTop = log.scrollHeight;
+  }
+
+  function setStatus(text) {
+    status.textContent = text;
+  }
+
+  function nextId(prefix) {
+    reqSeq += 1;
+    return `${prefix}-${reqSeq}`;
+  }
+
+  function sendRequest(method, params = {}) {
+    if (!ws || ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error("socket is not connected"));
+    }
+    const id = nextId(method.replace(/\W+/g, "_"));
+    const frame = { type: "req", id, method, params };
+    ws.send(JSON.stringify(frame));
+    return new Promise((resolve, reject) => {
+      inflight.set(id, { resolve, reject, method });
+      setTimeout(() => {
+        if (inflight.has(id)) {
+          inflight.delete(id);
+          reject(new Error(`timeout waiting for ${method}`));
+        }
+      }, 15000);
+    });
+  }
+
+  function setupSocket() {
+    const endpoint = endpointInput.value.trim();
+    if (!endpoint) {
+      appendLog("endpoint is required", true);
+      return;
+    }
+    ws = new WebSocket(endpoint);
+    setStatus("Connecting...");
+
+    ws.onopen = async () => {
+      setStatus("Connected (handshaking)");
+      try {
+        const token = tokenInput.value.trim();
+        const connectPayload = {
+          client_id: "kelvin-webchat",
+          auth: token ? { token } : undefined
+        };
+        const res = await sendRequest("connect", connectPayload);
+        appendLog(`connect ok: ${JSON.stringify(res.payload)}`);
+        setStatus("Connected");
+      } catch (err) {
+        appendLog(`connect failed: ${err.message}`, true);
+        setStatus("Connect failed");
+      }
+    };
+
+    ws.onclose = () => {
+      setStatus("Disconnected");
+      appendLog("socket closed");
+      ws = null;
+    };
+
+    ws.onerror = () => {
+      appendLog("socket error", true);
+    };
+
+    ws.onmessage = (event) => {
+      let frame = null;
+      try {
+        frame = JSON.parse(event.data);
+      } catch {
+        appendLog(`non-json frame: ${event.data}`, true);
+        return;
+      }
+
+      if (frame.type === "res" && frame.id && inflight.has(frame.id)) {
+        const req = inflight.get(frame.id);
+        inflight.delete(frame.id);
+        if (frame.ok) {
+          req.resolve(frame);
+        } else {
+          req.reject(new Error(frame.error?.message || "request failed"));
+        }
+        return;
+      }
+
+      appendLog(`event: ${JSON.stringify(frame)}`);
+    };
+  }
+
+  connectBtn.addEventListener("click", setupSocket);
+
+  healthBtn.addEventListener("click", async () => {
+    try {
+      const res = await sendRequest("health", {});
+      appendLog(`health: ${JSON.stringify(res.payload)}`);
+    } catch (err) {
+      appendLog(`health failed: ${err.message}`, true);
+    }
+  });
+
+  sendBtn.addEventListener("click", async () => {
+    const prompt = promptInput.value.trim();
+    if (!prompt) {
+      appendLog("prompt is required", true);
+      return;
+    }
+    try {
+      const requestId = `web-${Date.now()}`;
+      const submit = await sendRequest("agent", {
+        request_id: requestId,
+        prompt,
+        timeout_ms: 10000
+      });
+      const runId = submit.payload?.run_id;
+      appendLog(`agent accepted: run_id=${runId}`);
+      if (runId) {
+        const wait = await sendRequest("agent.wait", { run_id: runId, timeout_ms: 15000 });
+        appendLog(`agent.wait: ${JSON.stringify(wait.payload)}`);
+        const outcome = await sendRequest("agent.outcome", { run_id: runId, timeout_ms: 15000 });
+        appendLog(`agent.outcome: ${JSON.stringify(outcome.payload)}`);
+      }
+    } catch (err) {
+      appendLog(`agent failed: ${err.message}`, true);
+    }
+  });
+})();
+</script>
+</body>
+</html>
