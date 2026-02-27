@@ -155,6 +155,47 @@ impl MemoryControllerConfig {
         cfg
     }
 
+    pub fn validate(&self) -> KelvinResult<()> {
+        validate_non_empty("memory issuer", &self.issuer)?;
+        validate_non_empty("memory audience", &self.audience)?;
+        if self.clock_skew_secs > 300 {
+            return Err(KelvinError::InvalidInput(
+                "memory clock skew must be <= 300 seconds".to_string(),
+            ));
+        }
+        if self.max_module_bytes == 0 {
+            return Err(KelvinError::InvalidInput(
+                "memory max module bytes must be > 0".to_string(),
+            ));
+        }
+        if self.max_memory_pages == 0 {
+            return Err(KelvinError::InvalidInput(
+                "memory max memory pages must be > 0".to_string(),
+            ));
+        }
+        if self.default_fuel == 0 {
+            return Err(KelvinError::InvalidInput(
+                "memory default fuel must be > 0".to_string(),
+            ));
+        }
+        if self.default_timeout_ms == 0 {
+            return Err(KelvinError::InvalidInput(
+                "memory default timeout must be > 0".to_string(),
+            ));
+        }
+        if self.default_max_response_bytes == 0 {
+            return Err(KelvinError::InvalidInput(
+                "memory max response bytes must be > 0".to_string(),
+            ));
+        }
+        if self.replay_window_secs > 3_600 {
+            return Err(KelvinError::InvalidInput(
+                "memory replay window must be <= 3600 seconds".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn decoding_key(&self) -> KelvinResult<DecodingKey> {
         let pem = resolve_required_pem(
             &self.decoding_key_pem,
@@ -199,6 +240,36 @@ fn resolve_required_pem(inline: &str, path: &str, label: &str) -> KelvinResult<S
     resolve_optional_pem(inline, path, label)?.ok_or_else(|| {
         KelvinError::InvalidInput(format!("{label} must be provided via inline pem or path"))
     })
+}
+
+fn validate_non_empty(label: &str, value: &str) -> KelvinResult<()> {
+    if value.trim().is_empty() {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not be empty"
+        )));
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemoryControllerConfig;
+
+    #[test]
+    fn config_validate_rejects_zero_timeout() {
+        let mut cfg = MemoryControllerConfig::default();
+        cfg.default_timeout_ms = 0;
+        let err = cfg.validate().expect_err("zero timeout should fail");
+        assert!(err.to_string().contains("default timeout"));
+    }
+
+    #[test]
+    fn config_validate_rejects_issuer_whitespace() {
+        let mut cfg = MemoryControllerConfig::default();
+        cfg.issuer = "   ".to_string();
+        let err = cfg.validate().expect_err("empty issuer should fail");
+        assert!(err.to_string().contains("memory issuer"));
+    }
 }
 
 fn resolve_optional_pem(inline: &str, path: &str, label: &str) -> KelvinResult<Option<String>> {

@@ -2,6 +2,8 @@
 
 `apps/kelvin-gateway` exposes a WebSocket control plane over Kelvin SDK runtime composition.
 
+Protocol version constant: `1.0.0`.
+
 ## Security Defaults
 
 - connect-first handshake is required
@@ -55,6 +57,11 @@ First frame must be `connect`.
 - `auth.token` (required when gateway token is configured)
 - `client_id` (optional)
 
+Successful `connect` responses include:
+
+- `protocol_version`
+- `supported_methods`
+
 ## Methods
 
 - `health`
@@ -90,6 +97,12 @@ Telegram channel is configured only via environment variables and remains disabl
 
 - first submission stores acceptance metadata in the cache
 - repeated submission with the same `request_id` returns the cached acceptance and `deduped: true`
+
+## Compatibility Policy
+
+- `protocol_version` is the compatibility anchor for gateway clients.
+- method names in `supported_methods` are treated as a frozen v1 surface.
+- new methods are additive; existing method names and behavior are preserved for v1 clients.
 
 ## Errors
 

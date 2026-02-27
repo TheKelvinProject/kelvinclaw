@@ -1,11 +1,12 @@
 use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{BufRead, BufReader, Write};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use semver::Version;
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use tokio::sync::{broadcast, RwLock};
@@ -25,6 +26,10 @@ use kelvin_memory::MemoryBackendKind;
 use kelvin_memory::MemoryFactory;
 #[cfg(feature = "memory_rpc")]
 use kelvin_memory_client::{MemoryClientConfig, RpcMemoryManager};
+
+const MIN_DEFAULT_TIMEOUT_MS: u64 = 100;
+const MAX_DEFAULT_TIMEOUT_MS: u64 = 300_000;
+const MAX_CONFIG_ID_LEN: usize = 128;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum KelvinCliMemoryMode {
@@ -69,6 +74,20 @@ pub struct KelvinSdkConfig {
 }
 
 impl KelvinSdkConfig {
+    pub fn validate(&self) -> KelvinResult<()> {
+        if self.prompt.trim().is_empty() {
+            return Err(KelvinError::InvalidInput(
+                "prompt must not be empty".to_string(),
+            ));
+        }
+        validate_config_identifier("session id", &self.session_id)?;
+        validate_workspace_dir(&self.workspace_dir, "workspace_dir")?;
+        validate_timeout_ms(self.timeout_ms, "timeout_ms")?;
+        validate_core_version(&self.core_version)?;
+        validate_model_selection(&self.model_provider, self.load_installed_plugins)?;
+        Ok(())
+    }
+
     pub fn for_prompt(prompt: impl Into<String>) -> Self {
         Self {
             prompt: prompt.into(),
@@ -130,6 +149,31 @@ pub struct KelvinSdkRuntimeConfig {
 }
 
 impl KelvinSdkRuntimeConfig {
+    pub fn validate(&self) -> KelvinResult<()> {
+        validate_config_identifier("default session id", &self.default_session_id)?;
+        validate_workspace_dir(&self.workspace_dir, "workspace_dir")?;
+        validate_timeout_ms(self.default_timeout_ms, "default_timeout_ms")?;
+        validate_core_version(&self.core_version)?;
+        validate_model_selection(&self.model_provider, self.load_installed_plugins)?;
+
+        if self.max_session_history_messages < 4 {
+            return Err(KelvinError::InvalidInput(
+                "max_session_history_messages must be >= 4".to_string(),
+            ));
+        }
+        if self.compact_to_messages < 2 {
+            return Err(KelvinError::InvalidInput(
+                "compact_to_messages must be >= 2".to_string(),
+            ));
+        }
+        if self.compact_to_messages >= self.max_session_history_messages {
+            return Err(KelvinError::InvalidInput(
+                "compact_to_messages must be smaller than max_session_history_messages".to_string(),
+            ));
+        }
+        Ok(())
+    }
+
     pub fn from_run_config(config: &KelvinSdkConfig) -> Self {
         Self {
             workspace_dir: config.workspace_dir.clone(),
@@ -181,6 +225,118 @@ pub struct KelvinSdkAcceptedRun {
     pub run_id: String,
     pub accepted_at_ms: u128,
     pub cli_plugin_preflight: Option<String>,
+}
+
+fn validate_workspace_dir(path: &Path, label: &str) -> KelvinResult<()> {
+    if path.as_os_str().is_empty() {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not be empty"
+        )));
+    }
+    if !path.exists() {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} does not exist: {}",
+            path.to_string_lossy()
+        )));
+    }
+    if !path.is_dir() {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must be a directory: {}",
+            path.to_string_lossy()
+        )));
+    }
+    Ok(())
+}
+
+fn validate_timeout_ms(value: u64, label: &str) -> KelvinResult<()> {
+    if !(MIN_DEFAULT_TIMEOUT_MS..=MAX_DEFAULT_TIMEOUT_MS).contains(&value) {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must be between {MIN_DEFAULT_TIMEOUT_MS} and {MAX_DEFAULT_TIMEOUT_MS} milliseconds"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_core_version(value: &str) -> KelvinResult<()> {
+    if value.trim().is_empty() {
+        return Err(KelvinError::InvalidInput(
+            "core_version must not be empty".to_string(),
+        ));
+    }
+    Version::parse(value).map_err(|err| {
+        KelvinError::InvalidInput(format!("core_version must be valid semver: {err}"))
+    })?;
+    Ok(())
+}
+
+fn validate_config_identifier(label: &str, value: &str) -> KelvinResult<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not be empty"
+        )));
+    }
+    if trimmed.chars().count() > MAX_CONFIG_ID_LEN {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} exceeds max length {MAX_CONFIG_ID_LEN}"
+        )));
+    }
+    if trimmed.chars().any(|ch| ch.is_control()) {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not include control characters"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_model_selection(
+    selection: &KelvinSdkModelSelection,
+    load_installed_plugins: bool,
+) -> KelvinResult<()> {
+    match selection {
+        KelvinSdkModelSelection::Echo => Ok(()),
+        KelvinSdkModelSelection::InstalledPlugin { plugin_id } => {
+            if !load_installed_plugins {
+                return Err(KelvinError::InvalidInput(
+                    "model provider plugin selection requires load_installed_plugins=true"
+                        .to_string(),
+                ));
+            }
+            validate_config_identifier("model provider plugin id", plugin_id)
+        }
+        KelvinSdkModelSelection::InstalledPluginFailover {
+            plugin_ids,
+            max_retries_per_provider: _,
+            retry_backoff_ms,
+        } => {
+            if !load_installed_plugins {
+                return Err(KelvinError::InvalidInput(
+                    "model provider failover selection requires load_installed_plugins=true"
+                        .to_string(),
+                ));
+            }
+            if plugin_ids.is_empty() {
+                return Err(KelvinError::InvalidInput(
+                    "model failover requires at least one plugin id".to_string(),
+                ));
+            }
+            let mut seen = std::collections::HashSet::<String>::new();
+            for plugin_id in plugin_ids {
+                validate_config_identifier("model provider plugin id", plugin_id)?;
+                if !seen.insert(plugin_id.clone()) {
+                    return Err(KelvinError::InvalidInput(format!(
+                        "duplicate model provider plugin id in failover chain: {plugin_id}"
+                    )));
+                }
+            }
+            if *retry_backoff_ms == 0 {
+                return Err(KelvinError::InvalidInput(
+                    "retry_backoff_ms must be >= 1".to_string(),
+                ));
+            }
+            Ok(())
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -741,6 +897,7 @@ pub struct KelvinSdkRuntime {
 
 impl KelvinSdkRuntime {
     pub async fn initialize(config: KelvinSdkRuntimeConfig) -> KelvinResult<Self> {
+        config.validate()?;
         let persistence = RuntimePersistence::new(
             config.state_dir.clone(),
             config.persist_runs,
@@ -1042,6 +1199,7 @@ fn resolve_model_provider(
 }
 
 pub async fn run_with_sdk(config: KelvinSdkConfig) -> KelvinResult<KelvinRunSummary> {
+    config.validate()?;
     let runtime =
         KelvinSdkRuntime::initialize(KelvinSdkRuntimeConfig::from_run_config(&config)).await?;
     let accepted = runtime
@@ -1181,6 +1339,65 @@ mod tests {
         let path = std::env::temp_dir().join(format!("kelvin-sdk-test-{millis}"));
         std::fs::create_dir_all(&path).expect("create workspace");
         path
+    }
+
+    #[test]
+    fn runtime_config_validate_rejects_duplicate_failover_plugin_ids() {
+        let workspace = unique_workspace();
+        let cfg = super::KelvinSdkRuntimeConfig {
+            workspace_dir: workspace,
+            default_session_id: "main".to_string(),
+            memory_mode: KelvinCliMemoryMode::Markdown,
+            default_timeout_ms: 1_000,
+            default_system_prompt: None,
+            core_version: "0.1.0".to_string(),
+            plugin_security_policy: Default::default(),
+            load_installed_plugins: true,
+            model_provider: KelvinSdkModelSelection::InstalledPluginFailover {
+                plugin_ids: vec!["dup.plugin".to_string(), "dup.plugin".to_string()],
+                max_retries_per_provider: 1,
+                retry_backoff_ms: 100,
+            },
+            require_cli_plugin_tool: false,
+            emit_stdout_events: false,
+            state_dir: None,
+            persist_runs: false,
+            max_session_history_messages: 128,
+            compact_to_messages: 64,
+        };
+        let err = cfg.validate().expect_err("duplicate ids should fail");
+        assert!(err
+            .to_string()
+            .contains("duplicate model provider plugin id"));
+    }
+
+    #[test]
+    fn sdk_config_validate_rejects_missing_workspace() {
+        let mut cfg = KelvinSdkConfig::for_prompt("hello");
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_millis())
+            .unwrap_or_default();
+        let missing = std::env::temp_dir().join(format!("kelvin-sdk-test-missing-{millis}"));
+        if missing.exists() {
+            std::fs::remove_dir_all(&missing).expect("cleanup stale path");
+        }
+        cfg.workspace_dir = missing;
+        let err = cfg.validate().expect_err("missing workspace should fail");
+        assert!(err.to_string().contains("workspace_dir does not exist"));
+    }
+
+    #[test]
+    fn sdk_config_validate_rejects_non_semver_core_version() {
+        let mut cfg = KelvinSdkConfig::for_prompt("hello");
+        cfg.workspace_dir = unique_workspace();
+        cfg.core_version = "not-semver".to_string();
+        let err = cfg
+            .validate()
+            .expect_err("non-semver core version should fail");
+        assert!(err
+            .to_string()
+            .contains("core_version must be valid semver"));
     }
 
     fn sha256_hex(bytes: &[u8]) -> String {

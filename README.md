@@ -63,6 +63,7 @@ See:
 - [docs/openai-plugin-install-and-run.md](docs/openai-plugin-install-and-run.md)
 - [docs/runtime-container-first-run.md](docs/runtime-container-first-run.md)
 - [docs/plugin-index-schema.md](docs/plugin-index-schema.md)
+- [docs/compatibility-contracts.md](docs/compatibility-contracts.md)
 
 Workspace crates:
 

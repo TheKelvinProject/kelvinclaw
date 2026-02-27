@@ -3,7 +3,7 @@ use std::sync::Mutex;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
-use kelvin_gateway::run_gateway_with_listener;
+use kelvin_gateway::{run_gateway_with_listener, GATEWAY_METHODS_V1, GATEWAY_PROTOCOL_VERSION};
 use kelvin_sdk::{
     KelvinCliMemoryMode, KelvinSdkModelSelection, KelvinSdkRuntime, KelvinSdkRuntimeConfig,
 };
@@ -159,6 +159,41 @@ async fn gateway_enforces_auth_token_on_connect() {
 }
 
 #[tokio::test]
+async fn gateway_rejects_unknown_method_with_method_not_found() {
+    let _guard = ENV_LOCK
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let (url, server_handle) = start_gateway(Some("secret")).await;
+    let (mut socket, _) = connect_async(url).await.expect("connect");
+
+    send_request(
+        &mut socket,
+        "connect-unknown",
+        "connect",
+        json!({
+            "auth": {"token": "secret"},
+            "client_id": "integration-test",
+        }),
+    )
+    .await;
+    let connect_response = read_until_response(&mut socket, "connect-unknown").await;
+    assert_eq!(connect_response["ok"], json!(true));
+
+    send_request(
+        &mut socket,
+        "unknown-1",
+        "channel.unknown.dispatch",
+        json!({}),
+    )
+    .await;
+    let unknown_response = read_until_response(&mut socket, "unknown-1").await;
+    assert_eq!(unknown_response["ok"], json!(false));
+    assert_eq!(unknown_response["error"]["code"], json!("method_not_found"));
+
+    server_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_agent_submit_wait_and_idempotency_flow_works() {
     let _guard = ENV_LOCK
         .lock()
@@ -178,6 +213,26 @@ async fn gateway_agent_submit_wait_and_idempotency_flow_works() {
     .await;
     let connect_response = read_until_response(&mut socket, "connect-ok").await;
     assert_eq!(connect_response["ok"], json!(true));
+    assert_eq!(
+        connect_response["payload"]["protocol_version"],
+        json!(GATEWAY_PROTOCOL_VERSION)
+    );
+    assert_eq!(
+        connect_response["payload"]["supported_methods"],
+        json!(GATEWAY_METHODS_V1)
+    );
+
+    send_request(&mut socket, "health-1", "health", json!({})).await;
+    let health_response = read_until_response(&mut socket, "health-1").await;
+    assert_eq!(health_response["ok"], json!(true));
+    assert_eq!(
+        health_response["payload"]["protocol_version"],
+        json!(GATEWAY_PROTOCOL_VERSION)
+    );
+    assert_eq!(
+        health_response["payload"]["supported_methods"],
+        json!(GATEWAY_METHODS_V1)
+    );
 
     send_request(
         &mut socket,
@@ -260,6 +315,14 @@ async fn gateway_telegram_channel_pairing_and_dispatch_flow_works() {
     .await;
     let connect_response = read_until_response(&mut socket, "connect-telegram").await;
     assert_eq!(connect_response["ok"], json!(true));
+    assert_eq!(
+        connect_response["payload"]["protocol_version"],
+        json!(GATEWAY_PROTOCOL_VERSION)
+    );
+    assert_eq!(
+        connect_response["payload"]["supported_methods"],
+        json!(GATEWAY_METHODS_V1)
+    );
 
     send_request(
         &mut socket,

@@ -6,6 +6,7 @@ use jsonwebtoken::EncodingKey;
 use tokio::sync::Mutex;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
 use tonic::Request;
+use url::Url;
 
 use kelvin_core::{
     KelvinError, KelvinResult, MemoryEmbeddingProbeResult, MemoryProviderStatus, MemoryReadParams,
@@ -39,6 +40,7 @@ pub struct MemoryClientConfig {
     pub tls_client_cert_path: String,
     pub tls_client_key_pem: String,
     pub tls_client_key_path: String,
+    pub allow_insecure_non_loopback: bool,
     pub timeout_ms: u64,
     pub max_bytes: u64,
     pub max_results: u32,
@@ -64,6 +66,7 @@ impl Default for MemoryClientConfig {
             tls_client_cert_path: String::new(),
             tls_client_key_pem: String::new(),
             tls_client_key_path: String::new(),
+            allow_insecure_non_loopback: false,
             timeout_ms: 2_000,
             max_bytes: 1024 * 1024,
             max_results: 20,
@@ -159,6 +162,9 @@ impl MemoryClientConfig {
                 cfg.tls_client_key_path = value;
             }
         }
+        if let Ok(value) = std::env::var("KELVIN_MEMORY_RPC_ALLOW_INSECURE_NON_LOOPBACK") {
+            cfg.allow_insecure_non_loopback = parse_bool(value.trim());
+        }
         if let Ok(value) = std::env::var("KELVIN_MEMORY_TIMEOUT_MS") {
             if let Ok(parsed) = value.parse::<u64>() {
                 cfg.timeout_ms = parsed;
@@ -176,6 +182,54 @@ impl MemoryClientConfig {
         }
         cfg
     }
+
+    pub fn validate(&self) -> KelvinResult<()> {
+        validate_required_field("memory rpc endpoint", &self.endpoint)?;
+        validate_required_field("memory rpc issuer", &self.issuer)?;
+        validate_required_field("memory rpc audience", &self.audience)?;
+        validate_required_field("memory rpc subject", &self.subject)?;
+        validate_required_field("memory tenant id", &self.tenant_id)?;
+        validate_required_field("memory workspace id", &self.workspace_id)?;
+        validate_required_field("memory session id", &self.session_id)?;
+        validate_required_field("memory module id", &self.module_id)?;
+        if self.timeout_ms == 0 {
+            return Err(KelvinError::InvalidInput(
+                "memory timeout must be > 0".to_string(),
+            ));
+        }
+        if self.max_bytes == 0 {
+            return Err(KelvinError::InvalidInput(
+                "memory max bytes must be > 0".to_string(),
+            ));
+        }
+        if self.max_results == 0 {
+            return Err(KelvinError::InvalidInput(
+                "memory max results must be > 0".to_string(),
+            ));
+        }
+
+        let parsed = Url::parse(self.endpoint.trim()).map_err(|err| {
+            KelvinError::InvalidInput(format!(
+                "invalid memory rpc endpoint '{}': {err}",
+                self.endpoint
+            ))
+        })?;
+        let scheme = parsed.scheme().to_ascii_lowercase();
+        if scheme != "http" && scheme != "https" {
+            return Err(KelvinError::InvalidInput(
+                "memory rpc endpoint must use http:// or https://".to_string(),
+            ));
+        }
+        let host = parsed.host_str().ok_or_else(|| {
+            KelvinError::InvalidInput("memory rpc endpoint host is missing".to_string())
+        })?;
+        if scheme == "http" && !self.allow_insecure_non_loopback && !is_loopback_host(host) {
+            return Err(KelvinError::InvalidInput(format!(
+                "refusing insecure non-loopback memory rpc endpoint '{host}'. use https:// or set KELVIN_MEMORY_RPC_ALLOW_INSECURE_NON_LOOPBACK=true only on trusted networks"
+            )));
+        }
+        Ok(())
+    }
 }
 
 pub struct RpcMemoryManager {
@@ -186,6 +240,7 @@ pub struct RpcMemoryManager {
 
 impl RpcMemoryManager {
     pub async fn connect(cfg: MemoryClientConfig) -> KelvinResult<Self> {
+        cfg.validate()?;
         let signing_key_pem = resolve_required_pem(
             &cfg.signing_key_pem,
             &cfg.signing_key_path,
@@ -373,6 +428,33 @@ impl MemorySearchManager for RpcMemoryManager {
     }
 }
 
+fn parse_bool(value: &str) -> bool {
+    matches!(
+        value.to_ascii_lowercase().as_str(),
+        "1" | "true" | "yes" | "on"
+    )
+}
+
+fn validate_required_field(label: &str, value: &str) -> KelvinResult<()> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not be empty"
+        )));
+    }
+    if trimmed.chars().any(|ch| ch.is_control()) {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not include control characters"
+        )));
+    }
+    Ok(())
+}
+
+fn is_loopback_host(host: &str) -> bool {
+    let normalized = host.trim().to_ascii_lowercase();
+    normalized == "localhost" || normalized == "127.0.0.1" || normalized == "::1"
+}
+
 fn build_endpoint(cfg: &MemoryClientConfig) -> KelvinResult<Endpoint> {
     let mut endpoint = Endpoint::from_shared(cfg.endpoint.clone()).map_err(|err| {
         KelvinError::InvalidInput(format!(
@@ -538,4 +620,39 @@ fn now_secs() -> usize {
         .duration_since(UNIX_EPOCH)
         .map(|value| value.as_secs() as usize)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::MemoryClientConfig;
+
+    #[test]
+    fn config_validate_rejects_http_non_loopback_by_default() {
+        let mut cfg = MemoryClientConfig::default();
+        cfg.endpoint = "http://10.0.0.8:50051".to_string();
+        cfg.signing_key_pem = "placeholder".to_string();
+        let err = cfg
+            .validate()
+            .expect_err("http non-loopback should fail closed");
+        assert!(err.to_string().contains("refusing insecure non-loopback"));
+    }
+
+    #[test]
+    fn config_validate_accepts_http_non_loopback_with_explicit_opt_in() {
+        let mut cfg = MemoryClientConfig::default();
+        cfg.endpoint = "http://10.0.0.8:50051".to_string();
+        cfg.allow_insecure_non_loopback = true;
+        cfg.signing_key_pem = "placeholder".to_string();
+        cfg.validate()
+            .expect("explicitly allowed insecure non-loopback should pass");
+    }
+
+    #[test]
+    fn config_validate_rejects_empty_subject() {
+        let mut cfg = MemoryClientConfig::default();
+        cfg.subject = "   ".to_string();
+        cfg.signing_key_pem = "placeholder".to_string();
+        let err = cfg.validate().expect_err("empty subject should fail");
+        assert!(err.to_string().contains("memory rpc subject"));
+    }
 }

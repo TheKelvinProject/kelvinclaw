@@ -1310,6 +1310,7 @@ dependencies = [
  "tokio",
  "tokio-stream",
  "tonic",
+ "url",
  "wat",
 ]
 
@@ -1351,6 +1352,7 @@ dependencies = [
  "kelvin-memory",
  "kelvin-memory-client",
  "mockito",
+ "semver",
  "serde_json",
  "sha2",
  "tokio",

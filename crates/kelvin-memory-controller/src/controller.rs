@@ -67,6 +67,7 @@ pub struct MemoryController {
 
 impl MemoryController {
     pub fn new(config: MemoryControllerConfig, providers: ProviderRegistry) -> KelvinResult<Self> {
+        config.validate()?;
         validate_profile_compatibility(config.profile)?;
         Ok(Self {
             decoding_key: config.decoding_key()?,

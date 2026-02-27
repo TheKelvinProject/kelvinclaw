@@ -10,6 +10,7 @@ on:
         default: quick
         options:
           - quick
+          - contracts
           - full
       rust_toolchain:
         description: Rust toolchain
@@ -38,8 +39,23 @@ jobs:
         with:
           toolchain: ${{ inputs.rust_toolchain }}
 
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+
       - name: Cargo check (workspace)
         run: cargo check --workspace -q
+
+      - name: Contract compatibility tests
+        if: ${{ inputs.suite == 'contracts' || inputs.suite == 'full' }}
+        run: scripts/test-contracts.sh
+
+      - name: Cargo fmt check
+        if: ${{ inputs.suite == 'full' }}
+        run: cargo fmt --all -- --check
+
+      - name: Cargo clippy
+        if: ${{ inputs.suite == 'full' }}
+        run: cargo clippy --workspace -- -D warnings
 
       - name: Cargo test (workspace)
         if: ${{ inputs.suite == 'full' }}
