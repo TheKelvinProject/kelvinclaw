@@ -15,6 +15,7 @@ reqwest.workspace = true
 url.workspace = true
 kelvin-core = { path = "../../crates/kelvin-core" }
 kelvin-sdk = { path = "../../crates/kelvin-sdk", default-features = false }
+kelvin-wasm = { path = "../../crates/kelvin-wasm" }
 uuid.workspace = true
 
 [dev-dependencies]

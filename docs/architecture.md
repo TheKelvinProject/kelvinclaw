@@ -223,11 +223,15 @@ Implemented:
 - dynamic installed plugin loading with trust/scoping/operational guardrails
 - websocket gateway control plane (`apps/kelvin-gateway`) with connect/auth/idempotent run submission
 - SDK model failover chains with bounded retries and fail-closed non-retryable errors
+- multi-channel gateway lane (`telegram`, `slack`, `discord`) with channel-specific policy controls
+- deterministic channel routing rules by channel/account/workspace/session
+- channel conformance tests (ordering/idempotency/auth mismatch/flood handling)
+- optional WASM channel ingress policy ABI (`kelvin_channel_host_v1`)
 
 Not yet implemented:
 
-- full channel integrations and operator UI surfaces
-- provider credential profile routing trees
+- additional channel integrations beyond telegram/slack/discord and richer operator UI surfaces
+- provider credential profile routing trees for non-channel model lanes
 - full compaction/retry pipelines
 
 ## Operational Notes

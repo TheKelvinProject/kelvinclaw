@@ -1251,6 +1251,7 @@ dependencies = [
  "futures-util",
  "kelvin-core",
  "kelvin-sdk",
+ "kelvin-wasm",
  "reqwest",
  "serde",
  "serde_json",

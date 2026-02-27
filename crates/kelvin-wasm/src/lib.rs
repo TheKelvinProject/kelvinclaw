@@ -10,6 +10,9 @@ pub use model_host::{
     WasmModelHost,
 };
 
+pub mod channel_host;
+pub use channel_host::{channel_abi, ChannelSandboxPolicy, WasmChannelHost};
+
 pub mod claw_abi {
     pub const ABI_VERSION: &str = "1.0.0";
     pub const MODULE: &str = "claw";
