@@ -71,7 +71,7 @@ These are still open and are prioritized by security, stability, and maintainabi
 
 ### 1) Channel Integrations
 
-Status: `PARTIAL`
+Status: `DONE`
 
 Needed:
 
@@ -82,7 +82,11 @@ Needed:
 Now implemented:
 
 - Telegram ingress lane with dedupe, pairing, retry, and rate limiting
+- Slack ingress lane with ingress auth token enforcement, per-sender trust tiers, quotas, and dedupe
+- Discord ingress lane with ingress auth token enforcement, per-sender trust tiers, quotas, and dedupe
 - channel status observability metrics (ingest/dedupe/pairing/rate/timeout/retry/failure counters)
+- channel conformance integration tests for ordering/idempotency/auth mismatch/flood handling
+- optional per-channel WASM ingress policy plugin ABI (`kelvin_channel_host_v1`)
 
 ### 2) Daemon Lifecycle + Operator UX
 
@@ -133,13 +137,20 @@ Now implemented:
 
 ### 5) Multi-provider Auth Profiles and Routing Policy
 
-Status: `OPEN`
+Status: `DONE`
 
 Needed:
 
 - credential profile abstraction
 - policy-based model/provider routing
 - typed fallback trees tied to workspace/session policy
+
+Now implemented for channel lane:
+
+- deterministic channel routing rules (`KELVIN_CHANNEL_ROUTING_RULES_JSON`)
+- routing by channel/account/workspace/session with sender trust-tier matching
+- route metadata surfaced in channel ingest responses
+- explicit route inspection method (`channel.route.inspect`) for operator validation
 
 ## Near-Term TODO (Execution Order)
 

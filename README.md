@@ -68,6 +68,7 @@ See:
 - [docs/memory-module-sdk.md](docs/memory-module-sdk.md)
 - [docs/memory-controller-deployment-profiles.md](docs/memory-controller-deployment-profiles.md)
 - [docs/model-plugin-abi.md](docs/model-plugin-abi.md)
+- [docs/channel-plugin-abi.md](docs/channel-plugin-abi.md)
 - [docs/openai-plugin-install-and-run.md](docs/openai-plugin-install-and-run.md)
 - [docs/runtime-container-first-run.md](docs/runtime-container-first-run.md)
 - [docs/plugin-index-schema.md](docs/plugin-index-schema.md)
@@ -208,6 +209,11 @@ Methods available over the socket:
 - `channel.telegram.ingest`
 - `channel.telegram.pair.approve`
 - `channel.telegram.status`
+- `channel.slack.ingest`
+- `channel.slack.status`
+- `channel.discord.ingest`
+- `channel.discord.status`
+- `channel.route.inspect`
 
 Operational scripts:
 

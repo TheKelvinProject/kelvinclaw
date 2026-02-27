@@ -7,7 +7,10 @@ use std::path::PathBuf;
 use std::sync::Arc;
 use std::time::Instant;
 
-use channels::{ChannelEngine, TelegramIngressRequest, TelegramPairApproveRequest};
+use channels::{
+    ChannelEngine, ChannelRouteInspectRequest, DiscordIngressRequest, SlackIngressRequest,
+    TelegramIngressRequest, TelegramPairApproveRequest,
+};
 use futures_util::{SinkExt, StreamExt};
 use kelvin_core::{now_ms, KelvinError, RunOutcome};
 use kelvin_sdk::{
@@ -28,6 +31,11 @@ pub const GATEWAY_METHODS_V1: &[&str] = &[
     "agent.outcome",
     "agent.state",
     "agent.wait",
+    "channel.discord.ingest",
+    "channel.discord.status",
+    "channel.route.inspect",
+    "channel.slack.ingest",
+    "channel.slack.status",
     "channel.telegram.ingest",
     "channel.telegram.pair.approve",
     "channel.telegram.status",
@@ -611,7 +619,10 @@ async fn handle_request(
             "uptime_ms": state.started_at.elapsed().as_millis(),
             "loaded_installed_plugins": state.runtime.loaded_installed_plugins(),
             "channels": {
+                "routing": state.channels.lock().await.routing_status(),
                 "telegram": state.channels.lock().await.telegram_status(),
+                "slack": state.channels.lock().await.slack_status(),
+                "discord": state.channels.lock().await.discord_status(),
             },
         })),
         "agent" | "run.submit" => {
@@ -675,6 +686,35 @@ async fn handle_request(
         "channel.telegram.status" => {
             let channels = state.channels.lock().await;
             Ok(channels.telegram_status())
+        }
+        "channel.slack.ingest" => {
+            let params: SlackIngressRequest = parse_params(params, method)?;
+            let mut channels = state.channels.lock().await;
+            channels
+                .slack_ingest(&state.runtime, params)
+                .await
+                .map_err(map_kelvin_error)
+        }
+        "channel.slack.status" => {
+            let channels = state.channels.lock().await;
+            Ok(channels.slack_status())
+        }
+        "channel.discord.ingest" => {
+            let params: DiscordIngressRequest = parse_params(params, method)?;
+            let mut channels = state.channels.lock().await;
+            channels
+                .discord_ingest(&state.runtime, params)
+                .await
+                .map_err(map_kelvin_error)
+        }
+        "channel.discord.status" => {
+            let channels = state.channels.lock().await;
+            Ok(channels.discord_status())
+        }
+        "channel.route.inspect" => {
+            let params: ChannelRouteInspectRequest = parse_params(params, method)?;
+            let channels = state.channels.lock().await;
+            channels.route_inspect(params).map_err(map_kelvin_error)
         }
         _ => Err(GatewayErrorPayload {
             code: "method_not_found".to_string(),
@@ -906,7 +946,7 @@ mod tests {
 
     #[test]
     fn gateway_method_contract_matches_v1_surface() {
-        let methods = GATEWAY_METHODS_V1.iter().copied().collect::<Vec<_>>();
+        let methods = GATEWAY_METHODS_V1.to_vec();
         assert_eq!(
             methods,
             vec![
@@ -914,6 +954,11 @@ mod tests {
                 "agent.outcome",
                 "agent.state",
                 "agent.wait",
+                "channel.discord.ingest",
+                "channel.discord.status",
+                "channel.route.inspect",
+                "channel.slack.ingest",
+                "channel.slack.status",
                 "channel.telegram.ingest",
                 "channel.telegram.pair.approve",
                 "channel.telegram.status",

@@ -1,5 +1,5 @@
 use std::path::PathBuf;
-use std::sync::Mutex;
+use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
@@ -9,12 +9,13 @@ use kelvin_sdk::{
 };
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
+use tokio::sync::Mutex;
 use tokio::task::JoinHandle;
 use tokio::time::{sleep, Duration};
 use tokio_tungstenite::connect_async;
 use tokio_tungstenite::tungstenite::Message;
 
-static ENV_LOCK: Mutex<()> = Mutex::new(());
+static ENV_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
 struct EnvVarRestore {
     key: &'static str,
@@ -128,9 +129,7 @@ async fn read_until_response(
 
 #[tokio::test]
 async fn gateway_rejects_non_connect_first_frame() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     let (url, server_handle) = start_gateway(None).await;
     let (mut socket, _) = connect_async(url).await.expect("connect");
 
@@ -144,9 +143,7 @@ async fn gateway_rejects_non_connect_first_frame() {
 
 #[tokio::test]
 async fn gateway_enforces_auth_token_on_connect() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     let (url, server_handle) = start_gateway(Some("secret")).await;
     let (mut socket, _) = connect_async(url).await.expect("connect");
 
@@ -160,9 +157,7 @@ async fn gateway_enforces_auth_token_on_connect() {
 
 #[tokio::test]
 async fn gateway_rejects_unknown_method_with_method_not_found() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     let (url, server_handle) = start_gateway(Some("secret")).await;
     let (mut socket, _) = connect_async(url).await.expect("connect");
 
@@ -195,9 +190,7 @@ async fn gateway_rejects_unknown_method_with_method_not_found() {
 
 #[tokio::test]
 async fn gateway_agent_submit_wait_and_idempotency_flow_works() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     let (url, server_handle) = start_gateway(Some("secret")).await;
     let (mut socket, _) = connect_async(url).await.expect("connect");
 
@@ -290,9 +283,7 @@ async fn gateway_agent_submit_wait_and_idempotency_flow_works() {
 
 #[tokio::test]
 async fn gateway_telegram_channel_pairing_and_dispatch_flow_works() {
-    let _guard = ENV_LOCK
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let _guard = ENV_LOCK.lock().await;
     let _env_restore = [
         EnvVarRestore::set("KELVIN_TELEGRAM_ENABLED", Some("true")),
         EnvVarRestore::set("KELVIN_TELEGRAM_PAIRING_ENABLED", Some("true")),
@@ -395,6 +386,222 @@ async fn gateway_telegram_channel_pairing_and_dispatch_flow_works() {
     let dedupe_response = read_until_response(&mut socket, "tg-ingest-dup").await;
     assert_eq!(dedupe_response["ok"], json!(true));
     assert_eq!(dedupe_response["payload"]["status"], json!("deduped"));
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_slack_channel_dispatch_and_dedup_flow_works() {
+    let _guard = ENV_LOCK.lock().await;
+    let _env_restore = [
+        EnvVarRestore::set("KELVIN_SLACK_ENABLED", Some("true")),
+        EnvVarRestore::set("KELVIN_SLACK_INGRESS_TOKEN", Some("slack-ingress-secret")),
+        EnvVarRestore::set("KELVIN_SLACK_BOT_TOKEN", None),
+        EnvVarRestore::set("KELVIN_SLACK_MAX_MESSAGES_PER_MINUTE", Some("20")),
+    ];
+
+    let (url, server_handle) = start_gateway(Some("secret")).await;
+    let (mut socket, _) = connect_async(url).await.expect("connect");
+    send_request(
+        &mut socket,
+        "connect-slack",
+        "connect",
+        json!({
+            "auth": {"token": "secret"},
+            "client_id": "integration-test",
+        }),
+    )
+    .await;
+    let connect_response = read_until_response(&mut socket, "connect-slack").await;
+    assert_eq!(connect_response["ok"], json!(true));
+
+    send_request(
+        &mut socket,
+        "slack-auth-bad",
+        "channel.slack.ingest",
+        json!({
+            "delivery_id": "slack-delivery-auth-bad",
+            "channel_id": "C1",
+            "user_id": "U1",
+            "text": "hello",
+            "auth_token": "wrong",
+            "timeout_ms": 3000
+        }),
+    )
+    .await;
+    let auth_mismatch = read_until_response(&mut socket, "slack-auth-bad").await;
+    assert_eq!(auth_mismatch["ok"], json!(false));
+    assert_eq!(auth_mismatch["error"]["code"], json!("not_found"));
+
+    send_request(
+        &mut socket,
+        "slack-ingest-1",
+        "channel.slack.ingest",
+        json!({
+            "delivery_id": "slack-delivery-1",
+            "channel_id": "C1",
+            "user_id": "U1",
+            "text": "what is kelvin?",
+            "auth_token": "slack-ingress-secret",
+            "timeout_ms": 3000
+        }),
+    )
+    .await;
+    let dispatch_response = read_until_response(&mut socket, "slack-ingest-1").await;
+    assert_eq!(dispatch_response["ok"], json!(true));
+    assert_eq!(dispatch_response["payload"]["status"], json!("completed"));
+    assert_eq!(
+        dispatch_response["payload"]["route"]["session_id"],
+        json!("slack:C1")
+    );
+
+    send_request(
+        &mut socket,
+        "slack-ingest-dup",
+        "channel.slack.ingest",
+        json!({
+            "delivery_id": "slack-delivery-1",
+            "channel_id": "C1",
+            "user_id": "U1",
+            "text": "what is kelvin?",
+            "auth_token": "slack-ingress-secret",
+            "timeout_ms": 3000
+        }),
+    )
+    .await;
+    let dedupe_response = read_until_response(&mut socket, "slack-ingest-dup").await;
+    assert_eq!(dedupe_response["ok"], json!(true));
+    assert_eq!(dedupe_response["payload"]["status"], json!("deduped"));
+
+    send_request(
+        &mut socket,
+        "slack-status",
+        "channel.slack.status",
+        json!({}),
+    )
+    .await;
+    let status_response = read_until_response(&mut socket, "slack-status").await;
+    assert_eq!(status_response["ok"], json!(true));
+    assert_eq!(status_response["payload"]["enabled"], json!(true));
+    assert!(
+        status_response["payload"]["metrics"]["ingest_total"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2
+    );
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_discord_channel_flood_controls_and_route_inspection_work() {
+    let _guard = ENV_LOCK.lock().await;
+    let _env_restore = [
+        EnvVarRestore::set("KELVIN_DISCORD_ENABLED", Some("true")),
+        EnvVarRestore::set("KELVIN_DISCORD_BOT_TOKEN", None),
+        EnvVarRestore::set("KELVIN_DISCORD_MAX_MESSAGES_PER_MINUTE", Some("1")),
+        EnvVarRestore::set(
+            "KELVIN_CHANNEL_ROUTING_RULES_JSON",
+            Some(
+                r#"[
+                {"id":"discord-priority","priority":50,"channel":"discord","account_id":"D1","route_session_id":"discord-priority-session","route_system_prompt":"route:discord"},
+                {"id":"discord-fallback","priority":10,"channel":"discord","route_session_id":"discord-fallback-session"}
+            ]"#,
+            ),
+        ),
+    ];
+
+    let (url, server_handle) = start_gateway(Some("secret")).await;
+    let (mut socket, _) = connect_async(url).await.expect("connect");
+    send_request(
+        &mut socket,
+        "connect-discord",
+        "connect",
+        json!({
+            "auth": {"token": "secret"},
+            "client_id": "integration-test",
+        }),
+    )
+    .await;
+    let connect_response = read_until_response(&mut socket, "connect-discord").await;
+    assert_eq!(connect_response["ok"], json!(true));
+
+    send_request(
+        &mut socket,
+        "route-discord",
+        "channel.route.inspect",
+        json!({
+            "channel": "discord",
+            "account_id": "D1",
+            "sender_tier": "standard"
+        }),
+    )
+    .await;
+    let route_response = read_until_response(&mut socket, "route-discord").await;
+    assert_eq!(route_response["ok"], json!(true));
+    assert_eq!(
+        route_response["payload"]["route"]["matched_rule_id"],
+        json!("discord-priority")
+    );
+    assert_eq!(
+        route_response["payload"]["route"]["session_id"],
+        json!("discord-priority-session")
+    );
+
+    send_request(
+        &mut socket,
+        "discord-ingest-1",
+        "channel.discord.ingest",
+        json!({
+            "delivery_id": "discord-delivery-1",
+            "channel_id": "D1",
+            "user_id": "U1",
+            "text": "first discord message",
+            "timeout_ms": 3000
+        }),
+    )
+    .await;
+    let first_response = read_until_response(&mut socket, "discord-ingest-1").await;
+    assert_eq!(first_response["ok"], json!(true));
+    assert_eq!(first_response["payload"]["status"], json!("completed"));
+    assert_eq!(
+        first_response["payload"]["route"]["session_id"],
+        json!("discord-priority-session")
+    );
+
+    send_request(
+        &mut socket,
+        "discord-ingest-2",
+        "channel.discord.ingest",
+        json!({
+            "delivery_id": "discord-delivery-2",
+            "channel_id": "D1",
+            "user_id": "U1",
+            "text": "second discord message",
+            "timeout_ms": 3000
+        }),
+    )
+    .await;
+    let second_response = read_until_response(&mut socket, "discord-ingest-2").await;
+    assert_eq!(second_response["ok"], json!(false));
+    assert_eq!(second_response["error"]["code"], json!("timeout"));
+
+    send_request(
+        &mut socket,
+        "discord-status",
+        "channel.discord.status",
+        json!({}),
+    )
+    .await;
+    let status_response = read_until_response(&mut socket, "discord-status").await;
+    assert_eq!(status_response["ok"], json!(true));
+    assert_eq!(status_response["payload"]["enabled"], json!(true));
+    assert!(
+        status_response["payload"]["metrics"]["rate_limited_total"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1
+    );
 
     server_handle.abort();
 }
