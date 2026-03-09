@@ -49,7 +49,7 @@ scripts/kelvin-setup.sh --non-interactive
 
 Default plugin index URL:
 
-- `https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/index.json`
+- `https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/index.json`
 
 ## Security Notes
 

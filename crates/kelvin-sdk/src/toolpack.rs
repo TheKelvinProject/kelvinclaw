@@ -750,7 +750,7 @@ fn manifest(
         version: "0.1.0".to_string(),
         api_version: KELVIN_CORE_API_VERSION.to_string(),
         description: Some(description.to_string()),
-        homepage: Some("https://github.com/TheKelvinProject/kelvinclaw".to_string()),
+        homepage: Some("https://github.com/agentichighway/kelvinclaw".to_string()),
         capabilities,
         experimental: false,
         min_core_version: Some("0.1.0".to_string()),
