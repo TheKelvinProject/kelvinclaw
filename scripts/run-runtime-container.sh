@@ -3,7 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 IMAGE="${KELVIN_RUNTIME_IMAGE:-kelvin-runtime:dev}"
-DEFAULT_INDEX_URL="https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/index.json"
+DEFAULT_INDEX_URL="https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/index.json"
 INDEX_URL="${KELVIN_PLUGIN_INDEX_URL:-${DEFAULT_INDEX_URL}}"
 
 usage() {

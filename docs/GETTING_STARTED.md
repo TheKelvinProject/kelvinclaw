@@ -69,7 +69,7 @@ Expected result:
 
 Default plugin index URL:
 
-- `https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/index.json`
+- `https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/index.json`
 
 ## Track 2: Rust Developer (Runtime Contributor)
 

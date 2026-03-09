@@ -8,7 +8,7 @@ scripts/plugin-index-install.sh --plugin <id>
 
 Default index URL:
 
-- `https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/index.json`
+- `https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/index.json`
 
 ## Schema
 
@@ -19,9 +19,9 @@ Default index URL:
     {
       "id": "kelvin.cli",
       "version": "0.1.0",
-      "package_url": "https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/packages/kelvin.cli/0.1.0/kelvin.cli-0.1.0.tar.gz",
+      "package_url": "https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/packages/kelvin.cli/0.1.0/kelvin.cli-0.1.0.tar.gz",
       "sha256": "7db6...<64 hex chars>...",
-      "trust_policy_url": "https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/trusted_publishers.kelvin.json",
+      "trust_policy_url": "https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/trusted_publishers.kelvin.json",
       "quality_tier": "signed_trusted",
       "tags": ["first_party", "cli"]
     }

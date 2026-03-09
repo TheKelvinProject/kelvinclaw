@@ -41,7 +41,7 @@ scripts/verify-onboarding.sh --track daily
 - `apps/kelvin-host`: thin trusted host executable
 - `apps/kelvin-gateway`: secure WebSocket control-plane gateway
 - `crates/*`: core contracts, runtime, SDK, memory API/client/controller, and execution engine
-- first-party plugin distribution repo: `TheKelvinProject/kelvinclaw-plugins`
+- first-party plugin distribution repo: `agentichighway/kelvinclaw-plugins`
 - `examples/`: sample source crates for developers
 
 ## Architecture
@@ -303,7 +303,7 @@ scripts/install-kelvin-browser-plugin.sh
 
 Default index:
 
-- `https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/index.json`
+- `https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/index.json`
 
 Install a prebuilt plugin package:
 

@@ -79,7 +79,7 @@ scripts/plugin-discovery.sh --plugin kelvin.cli
 
 Default index URL:
 
-- `https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/index.json`
+- `https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/index.json`
 
 Default install location:
 
@@ -163,7 +163,7 @@ scripts/plugin-sign.sh \
 Reference template:
 
 - `trusted_publishers.example.json`
-- `https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/trusted_publishers.kelvin.json`
+- `https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/trusted_publishers.kelvin.json`
 
 ## Verification
 

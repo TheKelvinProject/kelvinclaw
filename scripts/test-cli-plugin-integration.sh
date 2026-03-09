@@ -8,7 +8,7 @@ PLUGIN_HOME="${WORK_DIR}/plugins"
 TRUST_POLICY_PATH="${WORK_DIR}/trusted_publishers.json"
 TARGET_DIR="${KELVIN_TEST_TARGET_DIR:-${WORK_DIR}/target}"
 LOG_PATH="${WORK_DIR}/cli.log"
-PLUGIN_INDEX_URL="${KELVIN_PLUGIN_INDEX_URL:-https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/index.json}"
+PLUGIN_INDEX_URL="${KELVIN_PLUGIN_INDEX_URL:-https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/index.json}"
 
 require_cmd() {
   local name="$1"

@@ -385,7 +385,7 @@ cmd_new() {
       version:$version,
       api_version:"1.0.0",
       description:"Kelvin plugin scaffold",
-      homepage:"https://github.com/TheKelvinProject/kelvinclaw-plugins",
+      homepage:"https://github.com/agentichighway/kelvinclaw-plugins",
       capabilities:$capabilities,
       experimental:false,
       min_core_version:"0.1.0",

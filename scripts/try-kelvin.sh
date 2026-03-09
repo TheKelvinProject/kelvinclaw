@@ -10,7 +10,7 @@ TARGET_DIR="${KELVIN_TRY_TARGET_DIR:-${ROOT_DIR}/target}"
 PLUGIN_HOME="${KELVIN_PLUGIN_HOME:-${ROOT_DIR}/.kelvin/plugins}"
 TRUST_POLICY_PATH="${KELVIN_TRUST_POLICY_PATH:-${ROOT_DIR}/.kelvin/trusted_publishers.json}"
 DOCKER_IMAGE="${KELVIN_TRY_DOCKER_IMAGE:-rust:1.93.1-bookworm}"
-PLUGIN_INDEX_URL="${KELVIN_PLUGIN_INDEX_URL:-https://raw.githubusercontent.com/TheKelvinProject/kelvinclaw-plugins/main/index.json}"
+PLUGIN_INDEX_URL="${KELVIN_PLUGIN_INDEX_URL:-https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/index.json}"
 
 ensure_cli_plugin() {
   if [[ -d "${PLUGIN_HOME}/kelvin.cli/current" ]]; then
