@@ -383,3 +383,30 @@ fn normalize_base_path(value: Option<&str>) -> Result<String, String> {
     }
     Ok(normalized)
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn public_ingress_bind_requires_explicit_insecure_override() {
+        let config = GatewayIngressConfig::from_env_overrides(
+            Some("0.0.0.0:0".parse().expect("bind addr")),
+            None,
+            None,
+            false,
+        )
+        .expect("ingress config");
+        let error = config
+            .bind_listener()
+            .await
+            .expect_err("public ingress bind should fail closed");
+        assert!(error.contains("without --allow-insecure-public-bind true"));
+    }
+
+    #[test]
+    fn normalize_base_path_rejects_whitespace_and_double_slashes() {
+        let error = normalize_base_path(Some("/bad //path")).expect_err("must reject whitespace");
+        assert!(error.contains("must not contain repeated slashes or whitespace"));
+    }
+}

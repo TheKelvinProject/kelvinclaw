@@ -1,0 +1,47 @@
+name: Plugin ABI Compat
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: '0 6 * * *'
+  push:
+    paths:
+      - '.github/workflows/plugin-abi-compat.yml'
+      - 'crates/kelvin-brain/**'
+      - 'crates/kelvin-host/**'
+      - 'crates/kelvin-sdk/**'
+      - 'docs/model-plugin-abi.md'
+      - 'scripts/lib/rust-toolchain-path.sh'
+      - 'scripts/plugin-discovery.sh'
+      - 'scripts/plugin-index-install.sh'
+      - 'scripts/test-plugin-abi-compat.sh'
+
+permissions:
+  contents: read
+
+jobs:
+  compat:
+    name: ABI Compat (${{ matrix.plugin }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        plugin:
+          - kelvin.cli
+          - kelvin.openai
+          - kelvin.anthropic
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Install Rust components
+        run: rustup component add rustfmt clippy
+
+      - name: Verify external plugin ABI compatibility
+        run: scripts/test-plugin-abi-compat.sh --plugin "${{ matrix.plugin }}"

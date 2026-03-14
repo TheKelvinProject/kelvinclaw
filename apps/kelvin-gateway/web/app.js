@@ -19,7 +19,19 @@
     runStateBtn: document.getElementById("runStateBtn"),
     runOutcomeBtn: document.getElementById("runOutcomeBtn"),
     runInspector: document.getElementById("runInspector"),
+    runsRefreshBtn: document.getElementById("runsRefreshBtn"),
+    runsSummary: document.getElementById("runsSummary"),
+    runsTable: document.getElementById("runsTable"),
+    sessionsRefreshBtn: document.getElementById("sessionsRefreshBtn"),
+    sessionSummary: document.getElementById("sessionSummary"),
+    sessionSelect: document.getElementById("sessionSelect"),
+    sessionTable: document.getElementById("sessionTable"),
+    sessionInspector: document.getElementById("sessionInspector"),
     channelCards: document.getElementById("channelCards"),
+    pluginsRefreshBtn: document.getElementById("pluginsRefreshBtn"),
+    pluginSummary: document.getElementById("pluginSummary"),
+    pluginTable: document.getElementById("pluginTable"),
+    trustInspector: document.getElementById("trustInspector"),
     scheduleRefreshBtn: document.getElementById("scheduleRefreshBtn"),
     scheduleSummary: document.getElementById("scheduleSummary"),
     scheduleTable: document.getElementById("scheduleTable"),
@@ -35,6 +47,10 @@
     inflight: new Map(),
     refreshTimer: null,
     health: null,
+    runs: null,
+    sessions: null,
+    sessionDetail: null,
+    plugins: null,
     schedules: null,
     scheduleHistory: null,
     lastRun: null,
@@ -111,8 +127,7 @@
       return Promise.reject(new Error("socket is not connected"));
     }
     const id = nextId(method.replace(/[^\w]+/g, "_"));
-    const payload = { type: "req", id, method, params };
-    state.socket.send(JSON.stringify(payload));
+    state.socket.send(JSON.stringify({ type: "req", id, method, params }));
     return new Promise((resolve, reject) => {
       const timeout = window.setTimeout(() => {
         state.inflight.delete(id);
@@ -194,7 +209,12 @@
       throw new Error("connect before refreshing");
     }
     await refreshHealth();
-    await refreshSchedules();
+    await Promise.all([
+      refreshSchedules(),
+      refreshRuns(),
+      refreshSessions(),
+      refreshPlugins(),
+    ]);
     refs.lastRefresh.textContent = `Last refresh: ${new Date().toLocaleTimeString()}`;
   }
 
@@ -203,6 +223,39 @@
     state.health = response.payload;
     renderOverview();
     renderChannels();
+  }
+
+  async function refreshRuns() {
+    const response = await sendRequest("operator.runs.list", {});
+    state.runs = response.payload;
+    renderRuns();
+  }
+
+  async function refreshSessions() {
+    const response = await sendRequest("operator.sessions.list", {});
+    state.sessions = response.payload;
+    renderSessions();
+    const sessionId = refs.sessionSelect.value.trim();
+    if (sessionId) {
+      await refreshSessionDetail(sessionId);
+    }
+  }
+
+  async function refreshSessionDetail(sessionId) {
+    if (!sessionId) {
+      state.sessionDetail = null;
+      refs.sessionInspector.textContent = "Session history will appear here.";
+      return;
+    }
+    const response = await sendRequest("operator.session.get", { session_id: sessionId, limit: 24 });
+    state.sessionDetail = response.payload;
+    refs.sessionInspector.textContent = jsonText(response.payload);
+  }
+
+  async function refreshPlugins() {
+    const response = await sendRequest("operator.plugins.inspect", {});
+    state.plugins = response.payload;
+    renderPlugins();
   }
 
   async function refreshSchedules() {
@@ -235,6 +288,8 @@
     const enabledChannels = CHANNELS.filter((name) => health.channels?.[name]?.enabled).length;
     const scheduler = health.scheduler || {};
     const schedulerStatus = scheduler.status || {};
+    const plugins = health.plugins || {};
+    const trust = plugins.trust_policy || {};
     const cards = [
       {
         label: "Transport",
@@ -252,9 +307,15 @@
       },
       {
         label: "Installed Plugins",
-        value: String(health.loaded_installed_plugins || 0),
-        detail: "Loaded through Kelvin SDK runtime",
-        tone: "ok",
+        value: String(plugins.loaded_installed_plugins || health.loaded_installed_plugins || 0),
+        detail: `${plugins.audit_counters?.plugin_count || 0} scanned on disk`,
+        tone: toneForWarning(!plugins.audit_counters?.scan_error),
+      },
+      {
+        label: "Trust Policy",
+        value: trust.ok ? "Healthy" : "Needs attention",
+        detail: `${trust.publishers_total || 0} publishers, ${trust.revoked_total || 0} revoked`,
+        tone: toneForWarning(Boolean(trust.ok)),
       },
       {
         label: "Scheduler",
@@ -273,6 +334,12 @@
         value: `${enabledChannels}/${CHANNELS.length}`,
         detail: "telegram, slack, discord",
         tone: toneForWarning(enabledChannels > 0),
+      },
+      {
+        label: "Plugin Audit",
+        value: `${plugins.audit_counters?.signatures_present || 0} signatures`,
+        detail: `${plugins.audit_counters?.current_versions || 0} current versions`,
+        tone: toneForWarning(!plugins.audit_counters?.scan_error),
       },
     ];
 
@@ -293,6 +360,11 @@
     refs.ingressDiscovery.textContent = jsonText({
       ingress: health.ingress,
       scheduler: schedulerStatus,
+      plugins: {
+        registry: plugins.registry,
+        trust_policy: trust,
+        capability_usage: plugins.capability_usage,
+      },
       operator_ui: health.ingress?.operator_ui_path || null,
     });
   }
@@ -326,6 +398,21 @@
     if (health.scheduler?.metrics?.last_error) {
       warnings.push(`Scheduler error: ${health.scheduler.metrics.last_error}`);
     }
+    if (!health.plugins?.plugin_home_exists) {
+      warnings.push("Configured plugin home does not exist.");
+    }
+    if (!health.plugins?.trust_policy?.ok) {
+      warnings.push(`Trust policy issue: ${health.plugins?.trust_policy?.error || "unavailable"}`);
+    }
+    if (health.plugins?.audit_counters?.scan_error) {
+      warnings.push(`Plugin scan error: ${health.plugins.audit_counters.scan_error}`);
+    }
+    if (
+      health.plugins?.trust_policy?.require_signature &&
+      (health.plugins?.audit_counters?.plugin_count || 0) > (health.plugins?.audit_counters?.signatures_present || 0)
+    ) {
+      warnings.push("At least one installed plugin is missing plugin.sig while signature enforcement is enabled.");
+    }
     return warnings;
   }
 
@@ -350,15 +437,157 @@
             <div><span>Verification</span><div>${escapeHtml(channel.ingress_verification?.method || "n/a")}</div></div>
             <div><span>Configured</span><div>${escapeHtml(String(channel.ingress_verification?.configured || false))}</div></div>
             <div><span>Last HTTP</span><div>${escapeHtml(channel.ingress_connectivity?.last_status_code || "n/a")}</div></div>
-            <div><span>Accepted Webhooks</span><div>${escapeHtml(channel.metrics?.webhook_accepted_total || 0)}</div></div>
-            <div><span>Denied Webhooks</span><div>${escapeHtml(channel.metrics?.webhook_denied_total || 0)}</div></div>
-            <div><span>Retries Seen</span><div>${escapeHtml(channel.metrics?.webhook_retry_total || 0)}</div></div>
-            <div><span>Ingress Total</span><div>${escapeHtml(channel.metrics?.ingest_total || 0)}</div></div>
-            <div><span>Rate Limited</span><div>${escapeHtml(channel.metrics?.rate_limited_total || 0)}</div></div>
+            <div><span>Accepted Webhooks</span><div>${escapeHtml(channel.metrics?.webhook_accepted_total ?? 0)}</div></div>
+            <div><span>Denied Webhooks</span><div>${escapeHtml(channel.metrics?.webhook_denied_total ?? 0)}</div></div>
+            <div><span>Retries Seen</span><div>${escapeHtml(channel.metrics?.webhook_retry_total ?? 0)}</div></div>
+            <div><span>Ingress Total</span><div>${escapeHtml(channel.metrics?.ingest_total ?? 0)}</div></div>
+            <div><span>Rate Limited</span><div>${escapeHtml(channel.metrics?.rate_limited_total ?? 0)}</div></div>
           </div>
         </article>
       `;
     }).join("");
+  }
+
+  function renderRuns() {
+    const payload = state.runs;
+    if (!payload) {
+      refs.runsSummary.textContent = "Refresh to load persisted runs.";
+      refs.runsTable.innerHTML = '<div class="empty-state">No run history loaded.</div>';
+      return;
+    }
+    const runs = payload.runs || [];
+    refs.runsSummary.textContent = `${runs.length} persisted runs from ${payload.state_dir || "no state dir"}`;
+    if (!runs.length) {
+      refs.runsTable.innerHTML = '<div class="empty-state">No persisted runs found.</div>';
+      return;
+    }
+    refs.runsTable.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Run ID</th>
+            <th>Session</th>
+            <th>Accepted</th>
+            <th>Updated</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${runs.map((item) => {
+            const status = item.last_outcome?.status || item.last_wait?.status || item.last_state?.status || "accepted";
+            return `
+              <tr>
+                <td>${escapeHtml(item.run_id || "n/a")}</td>
+                <td>${escapeHtml(item.session_id || "n/a")}</td>
+                <td>${escapeHtml(formatTime(item.accepted_at_ms))}</td>
+                <td>${escapeHtml(formatTime(item.updated_at_ms))}</td>
+                <td>${escapeHtml(status)}</td>
+              </tr>
+            `;
+          }).join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function renderSessions() {
+    const payload = state.sessions;
+    if (!payload) {
+      refs.sessionSummary.textContent = "Refresh to load session state.";
+      refs.sessionTable.innerHTML = '<div class="empty-state">No sessions loaded.</div>';
+      refs.sessionSelect.innerHTML = '<option value="">Select a session</option>';
+      return;
+    }
+    const sessions = payload.sessions || [];
+    refs.sessionSummary.textContent = `${sessions.length} sessions from ${payload.state_dir || "no state dir"}`;
+    const selected = refs.sessionSelect.value;
+    refs.sessionSelect.innerHTML = `<option value="">Select a session</option>${sessions.map((item) =>
+      `<option value="${escapeHtml(item.session_id)}"${selected === item.session_id ? " selected" : ""}>${escapeHtml(item.session_id)}</option>`
+    ).join("")}`;
+    if (!sessions.length) {
+      refs.sessionTable.innerHTML = '<div class="empty-state">No persisted sessions found.</div>';
+      return;
+    }
+    refs.sessionTable.innerHTML = `
+      <table>
+        <thead>
+          <tr>
+            <th>Session</th>
+            <th>Workspace</th>
+            <th>Messages</th>
+            <th>Last Message</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${sessions.map((item) => `
+            <tr>
+              <td>${escapeHtml(item.session_id)}</td>
+              <td>${escapeHtml(shortText(item.workspace_dir, 42))}</td>
+              <td>${escapeHtml(item.message_count ?? 0)}</td>
+              <td>${escapeHtml(shortText(item.last_message?.content || "n/a"))}</td>
+            </tr>
+          `).join("")}
+        </tbody>
+      </table>
+    `;
+  }
+
+  function renderPlugins() {
+    const payload = state.plugins;
+    if (!payload) {
+      refs.pluginSummary.textContent = "Refresh to load plugin and trust policy state.";
+      refs.pluginTable.innerHTML = '<div class="empty-state">No plugin inventory loaded.</div>';
+      refs.trustInspector.textContent = "Trust policy and registry details will appear here.";
+      return;
+    }
+    const plugins = payload.plugins || [];
+    const trust = payload.trust_policy || {};
+    refs.pluginSummary.textContent = [
+      `${plugins.length} plugin manifests`,
+      `${payload.loaded_installed_plugins || 0} loaded`,
+      `${trust.publishers_total || 0} trusted publishers`,
+      `${trust.revoked_total || 0} revoked`,
+    ].join(" • ");
+    if (!plugins.length) {
+      refs.pluginTable.innerHTML = '<div class="empty-state">No plugin manifests found in plugin home.</div>';
+    } else {
+      refs.pluginTable.innerHTML = `
+        <table>
+          <thead>
+            <tr>
+              <th>ID</th>
+              <th>Version</th>
+              <th>Runtime</th>
+              <th>Publisher</th>
+              <th>Tier</th>
+              <th>Capabilities</th>
+              <th>Flags</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${plugins.map((item) => `
+              <tr>
+                <td>${escapeHtml(item.id || "n/a")}</td>
+                <td>${escapeHtml(item.version || "n/a")}</td>
+                <td>${escapeHtml(item.runtime || "n/a")}</td>
+                <td>${escapeHtml(item.publisher || "n/a")}</td>
+                <td>${escapeHtml(item.quality_tier || "unsigned_local")}</td>
+                <td>${escapeHtml((item.capabilities || []).join(", ") || "n/a")}</td>
+                <td>${escapeHtml(`${item.signature_present ? "sig" : "no-sig"} / ${item.is_current ? "current" : "non-current"}`)}</td>
+              </tr>
+            `).join("")}
+          </tbody>
+        </table>
+      `;
+    }
+    refs.trustInspector.textContent = jsonText({
+      registry: payload.registry,
+      trust_policy: payload.trust_policy,
+      capability_usage: payload.capability_usage,
+      quality_tiers: payload.quality_tiers,
+      publishers: payload.publishers,
+      audit_counters: payload.audit_counters,
+    });
   }
 
   function renderSchedules() {
@@ -441,6 +670,8 @@
     state.lastRun = { accepted: accepted.payload, wait: wait.payload, outcome: outcome.payload };
     renderRunSummary();
     refs.runInspector.textContent = jsonText({ state: wait.payload, outcome: outcome.payload });
+    await refreshRuns();
+    await refreshSessions();
   }
 
   async function inspectRun(method) {
@@ -471,6 +702,20 @@
   refs.runOutcomeBtn.addEventListener("click", () => {
     inspectRun("run.outcome").catch((error) => appendLog(`run.outcome failed: ${error.message}`, "error"));
   });
+  refs.runsRefreshBtn.addEventListener("click", () => {
+    refreshRuns().catch((error) => appendLog(`run ledger refresh failed: ${error.message}`, "error"));
+  });
+  refs.sessionsRefreshBtn.addEventListener("click", () => {
+    refreshSessions().catch((error) => appendLog(`session refresh failed: ${error.message}`, "error"));
+  });
+  refs.sessionSelect.addEventListener("change", () => {
+    refreshSessionDetail(refs.sessionSelect.value.trim()).catch((error) =>
+      appendLog(`session detail failed: ${error.message}`, "error")
+    );
+  });
+  refs.pluginsRefreshBtn.addEventListener("click", () => {
+    refreshPlugins().catch((error) => appendLog(`plugin refresh failed: ${error.message}`, "error"));
+  });
   refs.scheduleRefreshBtn.addEventListener("click", () => {
     refreshSchedules().catch((error) => appendLog(`schedule refresh failed: ${error.message}`, "error"));
   });
@@ -484,6 +729,9 @@
 
   renderOverview();
   renderChannels();
+  renderRuns();
+  renderSessions();
+  renderPlugins();
   renderSchedules();
   renderRunSummary();
 })();

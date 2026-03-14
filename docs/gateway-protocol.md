@@ -116,6 +116,18 @@ Successful `connect` responses include:
   - params: none
 - `channel.route.inspect`
   - params: `channel`, `account_id`, optional `sender_tier`, `session_id`, `workspace_dir`
+- `operator.runs.list`
+  - params: optional `limit`
+- `operator.sessions.list`
+  - params: optional `limit`
+- `operator.session.get`
+  - params: `session_id`, optional `limit`
+- `operator.plugins.inspect`
+  - params: none
+- `schedule.list`
+  - params: none
+- `schedule.history`
+  - params: optional `schedule_id`
 
 ## Telegram Channel Policy
 
@@ -189,8 +201,8 @@ Per-channel status (`channel.<platform>.status`) includes:
 - ingress connectivity state (last request time, last accepted time, last HTTP status)
 - retry and deny counters for direct webhook traffic alongside existing ingest/dedupe/rate/outbound counters
 
-The operator console uses the existing websocket methods plus `health`, `schedule.list`, and `schedule.history`
-to render gateway, channel, scheduler, and run-inspection views.
+The operator console uses `health`, `schedule.list`, `schedule.history`, and the `operator.*`
+methods to render gateway, channel, scheduler, run, session, plugin, registry, and trust-policy views.
 
 ## WASM Channel Plugin ABI
 

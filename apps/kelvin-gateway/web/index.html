@@ -107,6 +107,39 @@
     </section>
   </section>
 
+  <section class="dashboard-grid">
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Runs</p>
+          <h2>Recent Run Ledger</h2>
+        </div>
+        <button id="runsRefreshBtn" class="secondary">Refresh Runs</button>
+      </div>
+      <div id="runsSummary" class="summary-card muted-block">Refresh to load persisted runs.</div>
+      <div id="runsTable" class="table-shell empty-state">No run history loaded.</div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Sessions</p>
+          <h2>Persisted Sessions</h2>
+        </div>
+        <button id="sessionsRefreshBtn" class="secondary">Refresh Sessions</button>
+      </div>
+      <div id="sessionSummary" class="summary-card muted-block">Refresh to load session state.</div>
+      <label>
+        <span>Session</span>
+        <select id="sessionSelect">
+          <option value="">Select a session</option>
+        </select>
+      </label>
+      <div id="sessionTable" class="table-shell empty-state">No sessions loaded.</div>
+      <pre id="sessionInspector" class="code-block muted-block">Session history will appear here.</pre>
+    </section>
+  </section>
+
   <section class="panel">
     <div class="section-head">
       <div>
@@ -115,6 +148,19 @@
       </div>
     </div>
     <div id="channelCards" class="card-grid"></div>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">Plugins</p>
+        <h2>Registry, Trust, and Capability State</h2>
+      </div>
+      <button id="pluginsRefreshBtn" class="secondary">Refresh Plugins</button>
+    </div>
+    <div id="pluginSummary" class="summary-card muted-block">Refresh to load plugin and trust policy state.</div>
+    <div id="pluginTable" class="table-shell empty-state">No plugin inventory loaded.</div>
+    <pre id="trustInspector" class="code-block muted-block">Trust policy and registry details will appear here.</pre>
   </section>
 
   <section class="dashboard-grid">

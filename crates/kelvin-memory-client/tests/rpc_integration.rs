@@ -1,4 +1,5 @@
 use std::net::SocketAddr;
+use std::sync::OnceLock;
 
 use rcgen::generate_simple_self_signed;
 use tokio::net::TcpListener;
@@ -90,6 +91,13 @@ fn generate_test_tls_material() -> TestTlsMaterial {
     }
 }
 
+fn ensure_rustls_crypto_provider() {
+    static RUSTLS_PROVIDER: OnceLock<()> = OnceLock::new();
+    let _ = RUSTLS_PROVIDER.get_or_init(|| {
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 async fn start_test_server() -> SocketAddr {
     start_test_server_with_tls(None).await
 }
@@ -112,6 +120,7 @@ async fn start_test_server_with_tls(tls: Option<TestTlsMaterial>) -> SocketAddr 
     tokio::spawn(async move {
         let mut builder = Server::builder();
         if let Some(tls) = tls {
+            ensure_rustls_crypto_provider();
             let mut tls_cfg = ServerTlsConfig::new()
                 .identity(Identity::from_pem(tls.server_cert_pem, tls.server_key_pem));
             if !tls.ca_pem.trim().is_empty() {

@@ -7,6 +7,7 @@ PLUGIN_HOME_DEFAULT="${HOME}/.kelvinclaw/plugins"
 TRUST_POLICY_DEFAULT="${HOME}/.kelvinclaw/trusted_publishers.json"
 
 INDEX_URL="${KELVIN_PLUGIN_INDEX_URL:-${DEFAULT_INDEX_URL}}"
+REGISTRY_URL="${KELVIN_PLUGIN_REGISTRY_URL:-}"
 PLUGIN_ID=""
 PLUGIN_VERSION=""
 PLUGIN_HOME="${KELVIN_PLUGIN_HOME:-${PLUGIN_HOME_DEFAULT}}"
@@ -26,6 +27,7 @@ Required options:
 Optional:
   --index-url <url>     Plugin index JSON URL
                         (default: $KELVIN_PLUGIN_INDEX_URL or kelvinclaw-plugins main index)
+  --registry-url <url>  Hosted registry base URL (uses /v1/index.json)
   --version <version>   Version to install (defaults to highest semver for id)
   --plugin-home <dir>   Install root (default: $KELVIN_PLUGIN_HOME or ~/.kelvinclaw/plugins)
   --trust-policy-path <path>
@@ -57,6 +59,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --index-url)
       INDEX_URL="${2:?missing value for --index-url}"
+      shift 2
+      ;;
+    --registry-url)
+      REGISTRY_URL="${2:?missing value for --registry-url}"
       shift 2
       ;;
     --plugin)
@@ -145,8 +151,25 @@ cleanup() {
 trap cleanup EXIT
 
 INDEX_FILE="${WORK_DIR}/index.json"
-echo "[plugin-index-install] fetching index: ${INDEX_URL}"
-curl -fsSL "${INDEX_URL}" -o "${INDEX_FILE}"
+resolve_index_url() {
+  local value="$1"
+  value="${value%/}"
+  if [[ "${value}" == *.json ]]; then
+    printf '%s' "${value}"
+  else
+    printf '%s/v1/index.json' "${value}"
+  fi
+}
+
+effective_index_url="${INDEX_URL}"
+if [[ -n "${REGISTRY_URL}" ]]; then
+  effective_index_url="$(resolve_index_url "${REGISTRY_URL}")"
+else
+  effective_index_url="$(resolve_index_url "${INDEX_URL}")"
+fi
+
+echo "[plugin-index-install] fetching index: ${effective_index_url}"
+curl -fsSL "${effective_index_url}" -o "${INDEX_FILE}"
 
 if [[ "$(jq -r '.schema_version // "missing"' "${INDEX_FILE}")" != "v1" ]]; then
   echo "Invalid index: expected schema_version=v1" >&2
@@ -164,7 +187,15 @@ if [[ -n "${PLUGIN_VERSION}" ]]; then
     "[${SELECTOR}] | .[0] // empty" "${INDEX_FILE}" > "${PLUGIN_JSON}"
 else
   jq -c --arg id "${PLUGIN_ID}" \
-    "[${SELECTOR}] | sort_by(.version) | reverse | .[0] // empty" "${INDEX_FILE}" > "${PLUGIN_JSON}"
+    '
+      def version_key:
+        (.version // "0.0.0")
+        | split("+")[0]
+        | split("-")[0]
+        | split(".")
+        | map(tonumber? // 0);
+      [.plugins[] | select(.id == $id)] | sort_by(version_key) | reverse | .[0] // empty
+    ' "${INDEX_FILE}" > "${PLUGIN_JSON}"
 fi
 
 if [[ ! -s "${PLUGIN_JSON}" || "$(cat "${PLUGIN_JSON}")" == "null" ]]; then

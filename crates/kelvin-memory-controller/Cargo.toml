@@ -26,6 +26,7 @@ kelvin-memory-module-sdk = { path = "../kelvin-memory-module-sdk" }
 serde.workspace = true
 serde_json.workspace = true
 tokio.workspace = true
+tokio-rustls.workspace = true
 tonic.workspace = true
 uuid.workspace = true
 wasmparser.workspace = true

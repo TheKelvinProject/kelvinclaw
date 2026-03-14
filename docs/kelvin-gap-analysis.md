@@ -90,7 +90,7 @@ Now implemented:
 
 ### 2) Daemon Lifecycle + Operator UX
 
-Status: `PARTIAL`
+Status: `DONE`
 
 Needed:
 
@@ -121,6 +121,9 @@ Now implemented:
   - channel ingress/delivery state
   - scheduler list/history views
   - run submission and run inspection
+  - persisted run ledger
+  - persisted session inventory and message drill-down
+  - plugin inventory, hosted-registry config, trust-policy, and audit counters
 - gateway health payload and channel status surfaces
 
 ### 4) Rich Context Management (Compaction/Pruning)
@@ -187,23 +190,24 @@ Implemented:
 - plugin author templates under `templates/plugin-author-kit/`
 - plugin quality tier conventions (`unsigned_local`, `signed_community`, `signed_trusted`)
 - plugin discovery helper (`scripts/plugin-discovery.sh`)
+- hosted registry service (`apps/kelvin-registry`) with:
+  - `GET /healthz`
+  - `GET /v1/index.json`
+  - `GET /v1/plugins`
+  - `GET /v1/plugins/{plugin_id}`
+  - `GET /v1/trust-policy`
+- plugin update-check helper (`scripts/plugin-update-check.sh`)
 - trust policy lifecycle ops (`scripts/plugin-trust.sh`) for:
   - key rotation
   - revocation
   - plugin publisher pinning
 - runtime trust enforcement for revoked publishers and pin mismatches
+- external plugin ABI compatibility workflow for first-party remote plugins
 
 Still open:
 
-- fully hosted plugin registry API service endpoints (current discovery is static index + helper)
-- multi-version ABI compatibility CI matrix against external plugin repos
 - automated publisher key rotation pipelines
 
 ## Near-Term TODO (Execution Order)
 
-1. Add hosted plugin registry API service endpoints beyond static index.
-2. Add external plugin repository compatibility-matrix CI lanes.
-3. Add daemon/service management for `kelvin-gateway` (systemd/launchd docs + scripts).
-4. Add gateway security tests for malformed frames, replay pressure, and auth brute-force throttling.
-5. Add plugin/trust-policy/operator pages beyond the current console shell.
-6. Keep consolidating Docker layer/cargo cache reuse across developer and CI scripts without letting `.cache/docker` grow unchecked.
+1. Automate publisher key rotation pipelines for hosted plugin/trust-policy distribution.

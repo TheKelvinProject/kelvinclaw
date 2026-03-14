@@ -255,12 +255,21 @@ Methods available over the socket:
 - `channel.discord.ingest`
 - `channel.discord.status`
 - `channel.route.inspect`
+- `operator.runs.list`
+- `operator.sessions.list`
+- `operator.session.get`
+- `operator.plugins.inspect`
+- `schedule.list`
+- `schedule.history`
 
 Operational scripts:
 
 - `scripts/kelvin-gateway-daemon.sh start|stop|status|logs|health`
+- `scripts/kelvin-gateway-service.sh render-systemd-user|install-systemd-user|render-launchd|install-launchd`
+- `scripts/kelvin-gateway-service-run.sh`
 - `scripts/kelvin-local-profile.sh start|stop|status|doctor`
 - `scripts/quickstart.sh --mode local|docker`
+- `scripts/docker-cache-prune.sh [--dry-run]`
 - `scripts/kelvin-doctor.sh`
 - `scripts/kelvin-webchat.sh [port]`
 
@@ -372,6 +381,18 @@ Plugin discovery:
 ```bash
 scripts/plugin-discovery.sh
 scripts/plugin-discovery.sh --plugin kelvin.cli
+scripts/plugin-update-check.sh --json
+```
+
+Hosted registry service:
+
+```bash
+cargo run -p kelvin-registry -- \
+  --index ./index.json \
+  --bind 127.0.0.1:34718
+
+scripts/plugin-discovery.sh --registry-url http://127.0.0.1:34718
+scripts/plugin-update-check.sh --registry-url http://127.0.0.1:34718 --json
 ```
 
 ## Installed Plugin Runtime (Secure Loader)

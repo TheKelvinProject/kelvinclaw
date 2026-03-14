@@ -1,3 +1,4 @@
+use std::fs;
 use std::path::PathBuf;
 use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -54,6 +55,32 @@ fn unique_workspace(prefix: &str) -> PathBuf {
     let path = std::env::temp_dir().join(format!("kelvin-gateway-test-{prefix}-{millis}"));
     std::fs::create_dir_all(&path).expect("create workspace");
     path
+}
+
+fn write_operator_fixture_plugin(plugin_home: &PathBuf) {
+    let version_dir = plugin_home.join("acme.echo").join("1.0.0");
+    fs::create_dir_all(&version_dir).expect("create plugin fixture dir");
+    fs::write(
+        version_dir.join("plugin.json"),
+        serde_json::to_vec_pretty(&json!({
+            "id": "acme.echo",
+            "name": "Acme Echo Plugin",
+            "version": "1.0.0",
+            "api_version": "1.0.0",
+            "description": "fixture plugin",
+            "homepage": "https://example.com/acme.echo",
+            "capabilities": ["tool_provider"],
+            "experimental": false,
+            "runtime": "wasm_tool_v1",
+            "tool_name": "acme_echo",
+            "entrypoint": "plugin.wasm",
+            "publisher": "acme",
+            "quality_tier": "signed_trusted"
+        }))
+        .expect("serialize plugin fixture"),
+    )
+    .expect("write plugin fixture");
+    fs::write(version_dir.join("plugin.sig"), "fixture-signature").expect("write plugin sig");
 }
 
 async fn start_gateway(auth_token: Option<&str>) -> (String, JoinHandle<()>) {
@@ -439,6 +466,174 @@ async fn gateway_exposes_scheduler_list_and_history() {
 }
 
 #[tokio::test]
+async fn gateway_exposes_operator_run_session_and_plugin_views() {
+    let _guard = ENV_LOCK.lock().await;
+    let workspace = unique_workspace("operator-runtime");
+    let state_dir = workspace.join(".kelvin").join("state");
+    let plugin_home = workspace.join(".kelvin").join("plugins");
+    let trust_policy_path = workspace.join(".kelvin").join("trusted_publishers.json");
+    fs::create_dir_all(&plugin_home).expect("create plugin home");
+    write_operator_fixture_plugin(&plugin_home);
+    fs::write(
+        &trust_policy_path,
+        serde_json::to_vec_pretty(&json!({
+            "require_signature": true,
+            "publishers": [
+                {
+                    "id": "acme",
+                    "ed25519_public_key": "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA="
+                }
+            ],
+            "revoked_publishers": ["revoked.publisher"],
+            "pinned_plugin_publishers": {
+                "acme.echo": "acme"
+            }
+        }))
+        .expect("serialize trust policy"),
+    )
+    .expect("write trust policy");
+    let plugin_home_text = plugin_home.to_string_lossy().to_string();
+    let trust_policy_text = trust_policy_path.to_string_lossy().to_string();
+    let _env_restore = [
+        EnvVarRestore::set("KELVIN_PLUGIN_HOME", Some(&plugin_home_text)),
+        EnvVarRestore::set("KELVIN_TRUST_POLICY_PATH", Some(&trust_policy_text)),
+    ];
+
+    let runtime = KelvinSdkRuntime::initialize(KelvinSdkRuntimeConfig {
+        workspace_dir: workspace.clone(),
+        default_session_id: "operator-session".to_string(),
+        memory_mode: KelvinCliMemoryMode::Fallback,
+        default_timeout_ms: 3_000,
+        default_system_prompt: None,
+        core_version: "0.1.0".to_string(),
+        plugin_security_policy: Default::default(),
+        load_installed_plugins: false,
+        model_provider: KelvinSdkModelSelection::Echo,
+        require_cli_plugin_tool: false,
+        emit_stdout_events: false,
+        state_dir: Some(state_dir.clone()),
+        persist_runs: true,
+        max_session_history_messages: 128,
+        compact_to_messages: 64,
+    })
+    .await
+    .expect("initialize runtime");
+    let accepted = runtime
+        .submit(kelvin_sdk::KelvinSdkRunRequest {
+            prompt: "operator view smoke test".to_string(),
+            session_id: Some("operator-session".to_string()),
+            workspace_dir: Some(workspace.clone()),
+            timeout_ms: Some(3_000),
+            system_prompt: None,
+            memory_query: None,
+            run_id: Some("operator-run-1".to_string()),
+        })
+        .await
+        .expect("submit run");
+    runtime
+        .wait_for_outcome(&accepted.run_id, 5_000)
+        .await
+        .expect("run outcome");
+
+    let (url, server_handle) =
+        start_gateway_with_runtime(runtime, Some("secret"), GatewaySecurityConfig::default()).await;
+    let (mut socket, _) = connect_async(url).await.expect("connect");
+    send_request(
+        &mut socket,
+        "connect-operator",
+        "connect",
+        json!({
+            "auth": {"token": "secret"},
+            "client_id": "operator-test",
+        }),
+    )
+    .await;
+    assert_eq!(
+        read_until_response(&mut socket, "connect-operator").await["ok"],
+        json!(true)
+    );
+
+    send_request(
+        &mut socket,
+        "operator-runs",
+        "operator.runs.list",
+        json!({}),
+    )
+    .await;
+    let runs = read_until_response(&mut socket, "operator-runs").await;
+    assert_eq!(runs["ok"], json!(true));
+    assert!(runs["payload"]["runs"]
+        .as_array()
+        .map(|items| items
+            .iter()
+            .any(|item| item["run_id"] == json!("operator-run-1")))
+        .unwrap_or(false));
+
+    send_request(
+        &mut socket,
+        "operator-sessions",
+        "operator.sessions.list",
+        json!({}),
+    )
+    .await;
+    let sessions = read_until_response(&mut socket, "operator-sessions").await;
+    assert_eq!(sessions["ok"], json!(true));
+    assert!(sessions["payload"]["sessions"]
+        .as_array()
+        .map(|items| items
+            .iter()
+            .any(|item| item["session_id"] == json!("operator-session")))
+        .unwrap_or(false));
+
+    send_request(
+        &mut socket,
+        "operator-session-get",
+        "operator.session.get",
+        json!({
+            "session_id": "operator-session",
+            "limit": 8
+        }),
+    )
+    .await;
+    let session = read_until_response(&mut socket, "operator-session-get").await;
+    assert_eq!(session["ok"], json!(true));
+    assert_eq!(session["payload"]["found"], json!(true));
+    assert!(
+        session["payload"]["message_count"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 2
+    );
+
+    send_request(
+        &mut socket,
+        "operator-plugins",
+        "operator.plugins.inspect",
+        json!({}),
+    )
+    .await;
+    let plugins = read_until_response(&mut socket, "operator-plugins").await;
+    assert_eq!(plugins["ok"], json!(true));
+    assert_eq!(plugins["payload"]["plugin_home_exists"], json!(true));
+    assert_eq!(plugins["payload"]["trust_policy"]["ok"], json!(true));
+    assert_eq!(plugins["payload"]["plugins"][0]["id"], json!("acme.echo"));
+    assert_eq!(
+        plugins["payload"]["capability_usage"]["tool_provider"],
+        json!(1)
+    );
+
+    send_request(&mut socket, "health-operator", "health", json!({})).await;
+    let health = read_until_response(&mut socket, "health-operator").await;
+    assert_eq!(health["ok"], json!(true));
+    assert_eq!(
+        health["payload"]["plugins"]["trust_policy"]["pinned_total"],
+        json!(1)
+    );
+
+    server_handle.abort();
+}
+
+#[tokio::test]
 async fn gateway_applies_auth_backoff_after_failed_connect_attempts() {
     let _guard = ENV_LOCK.lock().await;
     let security = GatewaySecurityConfig {
@@ -504,6 +699,54 @@ async fn gateway_closes_connection_on_oversized_frame() {
         Some(Ok(Message::Close(_))) | None => {}
         Some(Err(_)) => {}
         other => panic!("expected socket close or error, got {other:?}"),
+    }
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_closes_connection_on_malformed_json_frame() {
+    let _guard = ENV_LOCK.lock().await;
+    let (url, server_handle) = start_gateway(Some("secret")).await;
+    let (mut socket, _) = connect_async(url).await.expect("connect");
+
+    send_request(
+        &mut socket,
+        "connect-malformed",
+        "connect",
+        json!({
+            "auth": {"token": "secret"},
+            "client_id": "integration-test",
+        }),
+    )
+    .await;
+    let connect_response = read_until_response(&mut socket, "connect-malformed").await;
+    assert_eq!(connect_response["ok"], json!(true));
+
+    socket
+        .send(Message::Text("{not-json".to_string()))
+        .await
+        .expect("send malformed frame");
+
+    let first = tokio::time::timeout(Duration::from_secs(2), socket.next())
+        .await
+        .expect("gateway response");
+    match first {
+        Some(Ok(Message::Text(text))) => {
+            let frame: Value = serde_json::from_str(&text).expect("json error frame");
+            assert_eq!(frame["ok"], json!(false));
+            assert_eq!(frame["error"]["code"], json!("invalid_request"));
+            match tokio::time::timeout(Duration::from_secs(2), socket.next()).await {
+                Ok(Some(Ok(Message::Close(_)))) | Ok(None) => {}
+                Ok(Some(Err(_))) => {}
+                other => {
+                    panic!("expected socket close or error after invalid frame, got {other:?}")
+                }
+            }
+        }
+        Some(Ok(Message::Close(_))) | None => {}
+        Some(Err(_)) => {}
+        other => panic!("expected invalid_request response or socket close, got {other:?}"),
     }
 
     server_handle.abort();

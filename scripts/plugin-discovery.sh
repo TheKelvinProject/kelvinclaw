@@ -3,6 +3,7 @@ set -euo pipefail
 
 DEFAULT_INDEX_URL="https://raw.githubusercontent.com/agentichighway/kelvinclaw-plugins/main/index.json"
 INDEX_URL="${KELVIN_PLUGIN_INDEX_URL:-${DEFAULT_INDEX_URL}}"
+REGISTRY_URL="${KELVIN_PLUGIN_REGISTRY_URL:-}"
 PLUGIN_ID=""
 OUTPUT_JSON="0"
 
@@ -14,6 +15,8 @@ Query plugin registry index metadata/discovery endpoints.
 
 Options:
   --index-url <url>   Registry index URL (default: kelvinclaw-plugins index.json)
+  --registry-url <url>
+                      Hosted registry base URL (uses /v1/plugins endpoints)
   --plugin <id>       Filter by plugin id
   --json              Emit JSON output
   -h, --help          Show help
@@ -32,6 +35,10 @@ while [[ $# -gt 0 ]]; do
   case "$1" in
     --index-url)
       INDEX_URL="${2:?missing value for --index-url}"
+      shift 2
+      ;;
+    --registry-url)
+      REGISTRY_URL="${2:?missing value for --registry-url}"
       shift 2
       ;;
     --plugin)
@@ -61,21 +68,57 @@ WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "${WORK_DIR}"' EXIT
 INDEX_PATH="${WORK_DIR}/index.json"
 
-curl -fsSL "${INDEX_URL}" -o "${INDEX_PATH}"
-if [[ "$(jq -r '.schema_version // "missing"' "${INDEX_PATH}")" != "v1" ]]; then
-  echo "Invalid index schema_version" >&2
-  exit 1
+sort_plugins_json() {
+  jq -c '
+    def version_key:
+      (.version // "0.0.0")
+      | split("+")[0]
+      | split("-")[0]
+      | split(".")
+      | map(tonumber? // 0);
+    sort_by(.id)
+    | group_by(.id)
+    | map(sort_by(version_key) | reverse)
+    | add // []
+  '
+}
+
+normalize_registry_url() {
+  local value="$1"
+  value="${value%/}"
+  printf '%s' "${value}"
+}
+
+service_url=""
+if [[ -n "${REGISTRY_URL}" ]]; then
+  service_url="$(normalize_registry_url "${REGISTRY_URL}")"
+elif [[ "${INDEX_URL}" != *.json ]]; then
+  service_url="$(normalize_registry_url "${INDEX_URL}")"
 fi
 
-if [[ -n "${PLUGIN_ID}" ]]; then
-  FILTER='.plugins | map(select(.id == $id))'
-  PLUGINS_JSON="$(jq -c --arg id "${PLUGIN_ID}" "${FILTER}" "${INDEX_PATH}")"
+if [[ -n "${service_url}" ]]; then
+  if [[ -n "${PLUGIN_ID}" ]]; then
+    PLUGINS_JSON="$(curl -fsSL "${service_url}/v1/plugins/${PLUGIN_ID}" | jq -c '.versions // []')"
+  else
+    PLUGINS_JSON="$(curl -fsSL "${service_url}/v1/plugins" | jq -c '.plugins // []')"
+  fi
 else
-  PLUGINS_JSON="$(jq -c '.plugins // []' "${INDEX_PATH}")"
+  curl -fsSL "${INDEX_URL}" -o "${INDEX_PATH}"
+  if [[ "$(jq -r '.schema_version // "missing"' "${INDEX_PATH}")" != "v1" ]]; then
+    echo "Invalid index schema_version" >&2
+    exit 1
+  fi
+
+  if [[ -n "${PLUGIN_ID}" ]]; then
+    FILTER='.plugins | map(select(.id == $id))'
+    PLUGINS_JSON="$(jq -c --arg id "${PLUGIN_ID}" "${FILTER}" "${INDEX_PATH}")"
+  else
+    PLUGINS_JSON="$(jq -c '.plugins // []' "${INDEX_PATH}")"
+  fi
 fi
 
 if [[ "${OUTPUT_JSON}" == "1" ]]; then
-  echo "${PLUGINS_JSON}" | jq -c 'sort_by(.id, .version)'
+  echo "${PLUGINS_JSON}" | sort_plugins_json
   exit 0
 fi
 
@@ -86,8 +129,8 @@ if [[ "${COUNT}" == "0" ]]; then
 fi
 
 printf "%-30s %-12s %-16s %s\n" "ID" "VERSION" "QUALITY_TIER" "PACKAGE_URL"
-echo "${PLUGINS_JSON}" | jq -r '
-  sort_by(.id, .version)[] |
+echo "${PLUGINS_JSON}" | sort_plugins_json | jq -r '
+  .[] |
   [
     (.id // "-"),
     (.version // "-"),

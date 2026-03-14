@@ -69,6 +69,7 @@ Install from remote plugin index:
 
 ```bash
 scripts/plugin-index-install.sh --plugin kelvin.cli
+scripts/plugin-update-check.sh --json
 ```
 
 Discover index entries:
@@ -76,6 +77,15 @@ Discover index entries:
 ```bash
 scripts/plugin-discovery.sh
 scripts/plugin-discovery.sh --plugin kelvin.cli
+```
+
+Run the hosted registry service instead of a raw `index.json`:
+
+```bash
+cargo run -p kelvin-registry -- --index ./index.json --bind 127.0.0.1:34718
+scripts/plugin-discovery.sh --registry-url http://127.0.0.1:34718
+scripts/plugin-index-install.sh --plugin kelvin.cli --registry-url http://127.0.0.1:34718
+scripts/plugin-update-check.sh --registry-url http://127.0.0.1:34718 --json
 ```
 
 Default index URL:

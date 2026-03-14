@@ -378,6 +378,83 @@ async fn slack_http_webhook_verifies_signatures_and_tracks_retries() {
 }
 
 #[tokio::test]
+async fn slack_http_webhook_rejects_replay_window_pressure() {
+    let _guard = ENV_LOCK.lock().await;
+    let _env_restore = [
+        EnvVarRestore::set("KELVIN_SLACK_ENABLED", Some("true")),
+        EnvVarRestore::set("KELVIN_SLACK_BOT_TOKEN", None),
+        EnvVarRestore::set("KELVIN_SLACK_SIGNING_SECRET", Some("slack-signing-secret")),
+        EnvVarRestore::set("KELVIN_SLACK_WEBHOOK_REPLAY_WINDOW_SECS", Some("60")),
+    ];
+    let ingress = GatewayIngressConfig::from_env_overrides(
+        Some("127.0.0.1:0".parse().expect("ingress bind")),
+        None,
+        None,
+        false,
+    )
+    .expect("ingress config");
+    let (ws_url, server_handle) = start_gateway_with_ingress(Some("secret"), ingress).await;
+    let mut socket = connect_gateway(&ws_url).await;
+    let ingress_base = ingress_base_url(&mut socket).await;
+    let client = Client::new();
+    let event_body = json!({
+        "type": "event_callback",
+        "event_id": "EvReplay",
+        "event": {
+            "type": "message",
+            "channel": "C1",
+            "user": "U1",
+            "text": "stale replay"
+        }
+    })
+    .to_string();
+    let stale_timestamp = (SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
+        - 600)
+        .to_string();
+
+    for retry_num in 0..4 {
+        let retry_header = retry_num.to_string();
+        let response = post_signed_slack_with_timestamp(
+            &client,
+            &format!("{ingress_base}/slack"),
+            "slack-signing-secret",
+            &event_body,
+            Some(&retry_header),
+            &stale_timestamp,
+        )
+        .await;
+        assert_eq!(response.status(), reqwest::StatusCode::UNAUTHORIZED);
+    }
+
+    let status = wait_for_channel_status(&mut socket, "channel.slack.status", |payload| {
+        payload["metrics"]["webhook_denied_total"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 4
+            && payload["metrics"]["verification_failed_total"]
+                .as_u64()
+                .unwrap_or_default()
+                >= 4
+    })
+    .await;
+    assert!(
+        status["metrics"]["webhook_retry_total"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 4
+    );
+    assert_eq!(
+        status["ingress_verification"]["last_error"],
+        json!("slack request timestamp is outside the replay window")
+    );
+
+    server_handle.abort();
+}
+
+#[tokio::test]
 async fn discord_http_interactions_verify_signatures_and_dispatch() {
     let _guard = ENV_LOCK.lock().await;
     let signing_key = SigningKey::from_bytes(&[7_u8; 32]);
@@ -510,12 +587,23 @@ async fn post_signed_slack(
     retry_num: Option<&str>,
 ) -> reqwest::Response {
     let timestamp = slack_timestamp();
+    post_signed_slack_with_timestamp(client, url, signing_secret, body, retry_num, &timestamp).await
+}
+
+async fn post_signed_slack_with_timestamp(
+    client: &Client,
+    url: &str,
+    signing_secret: &str,
+    body: &str,
+    retry_num: Option<&str>,
+    timestamp: &str,
+) -> reqwest::Response {
     let key = hmac::Key::new(hmac::HMAC_SHA256, signing_secret.as_bytes());
     let payload = format!("v0:{timestamp}:{body}");
     let signature = hmac::sign(&key, payload.as_bytes());
     let mut request = client
         .post(url)
-        .header("X-Slack-Request-Timestamp", &timestamp)
+        .header("X-Slack-Request-Timestamp", timestamp)
         .header(
             "X-Slack-Signature",
             format!("v0={}", hex_encode(signature.as_ref())),

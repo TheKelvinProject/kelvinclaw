@@ -2,6 +2,7 @@
 members = [
   "apps/kelvin-gateway",
   "apps/kelvin-host",
+  "apps/kelvin-registry",
   "crates/kelvin-core",
   "crates/kelvin-sdk",
   "crates/kelvin-memory",
