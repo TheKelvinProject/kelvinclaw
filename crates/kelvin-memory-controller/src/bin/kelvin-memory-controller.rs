@@ -8,6 +8,26 @@ use kelvin_memory_api::v1alpha1::memory_service_server::MemoryServiceServer;
 use kelvin_memory_api::MemoryModuleManifest;
 use kelvin_memory_controller::{MemoryController, MemoryControllerConfig, ProviderRegistry};
 
+fn usage() -> &'static str {
+    "Usage: kelvin-memory-controller [--help]"
+}
+
+fn handle_cli() -> Result<(), String> {
+    let mut args = std::env::args().skip(1);
+    while let Some(arg) = args.next() {
+        match arg.as_str() {
+            "-h" | "--help" => {
+                println!("{}", usage());
+                std::process::exit(0);
+            }
+            _ => {
+                return Err(format!("unknown argument: {arg}\n{}", usage()));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn ensure_rustls_crypto_provider() {
     static RUSTLS_PROVIDER: OnceLock<()> = OnceLock::new();
     let _ = RUSTLS_PROVIDER.get_or_init(|| {
@@ -17,6 +37,10 @@ fn ensure_rustls_crypto_provider() {
 
 #[tokio::main]
 async fn main() {
+    if let Err(err) = handle_cli() {
+        eprintln!("{err}");
+        std::process::exit(1);
+    }
     if let Err(err) = run().await {
         eprintln!("error: {err}");
         std::process::exit(1);
