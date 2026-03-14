@@ -33,6 +33,7 @@ Optional direct channel ingress runs on a separate HTTP listener:
 - optional route prefix: `KELVIN_GATEWAY_INGRESS_BASE_PATH` or `--ingress-base-path <path>`
 - optional body limit: `KELVIN_GATEWAY_INGRESS_MAX_BODY_BYTES` or `--ingress-max-body-bytes <n>`
 - default base path: `/ingress`
+- operator console path: `/operator/`
 - routes:
   - `POST /ingress/telegram`
   - `POST /ingress/slack`
@@ -187,6 +188,9 @@ Per-channel status (`channel.<platform>.status`) includes:
 - ingress verification state (`method`, `configured`, last success/failure timestamps, last verification error)
 - ingress connectivity state (last request time, last accepted time, last HTTP status)
 - retry and deny counters for direct webhook traffic alongside existing ingest/dedupe/rate/outbound counters
+
+The operator console uses the existing websocket methods plus `health`, `schedule.list`, and `schedule.history`
+to render gateway, channel, scheduler, and run-inspection views.
 
 ## WASM Channel Plugin ABI
 

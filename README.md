@@ -235,6 +235,10 @@ Direct ingress routes:
 - `POST /ingress/slack`
 - `POST /ingress/discord`
 
+Operator console on the same HTTP listener:
+
+- `GET /operator/`
+
 Methods available over the socket:
 
 - `connect`

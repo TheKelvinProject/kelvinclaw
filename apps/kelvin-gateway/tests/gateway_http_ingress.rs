@@ -166,19 +166,24 @@ async fn ingress_base_url(
         tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
     >,
 ) -> String {
+    let ingress = ingress_status(socket).await;
+    format!(
+        "http://{}{}",
+        ingress["bind_addr"].as_str().expect("ingress bind addr"),
+        ingress["base_path"].as_str().expect("ingress base path")
+    )
+}
+
+async fn ingress_status(
+    socket: &mut tokio_tungstenite::WebSocketStream<
+        tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>,
+    >,
+) -> Value {
     send_request(socket, "health-ingress", "health", json!({})).await;
     let response = read_until_response(socket, "health-ingress").await;
     assert_eq!(response["ok"], json!(true));
     assert_eq!(response["payload"]["ingress"]["enabled"], json!(true));
-    format!(
-        "http://{}{}",
-        response["payload"]["ingress"]["bind_addr"]
-            .as_str()
-            .expect("ingress bind addr"),
-        response["payload"]["ingress"]["base_path"]
-            .as_str()
-            .expect("ingress base path")
-    )
+    response["payload"]["ingress"].clone()
 }
 
 async fn wait_for_channel_status<F>(
@@ -455,6 +460,44 @@ async fn discord_http_interactions_verify_signatures_and_dispatch() {
         status["ingress_connectivity"]["last_status_code"],
         json!(200)
     );
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn ingress_listener_serves_operator_console_assets() {
+    let _guard = ENV_LOCK.lock().await;
+    let ingress = GatewayIngressConfig::from_env_overrides(
+        Some("127.0.0.1:0".parse().expect("ingress bind")),
+        None,
+        None,
+        false,
+    )
+    .expect("ingress config");
+    let (ws_url, server_handle) = start_gateway_with_ingress(Some("secret"), ingress).await;
+    let mut socket = connect_gateway(&ws_url).await;
+    let ingress = ingress_status(&mut socket).await;
+    let root = format!(
+        "http://{}",
+        ingress["bind_addr"].as_str().expect("ingress bind addr")
+    );
+    assert_eq!(ingress["operator_ui_path"], json!("/operator/"));
+
+    let index = Client::new()
+        .get(format!("{root}/operator/"))
+        .send()
+        .await
+        .expect("operator index");
+    assert_eq!(index.status(), reqwest::StatusCode::OK);
+    let body = index.text().await.expect("operator index body");
+    assert!(body.contains("KelvinClaw Operator"));
+
+    let script = Client::new()
+        .get(format!("{root}/operator/app.js"))
+        .send()
+        .await
+        .expect("operator script");
+    assert_eq!(script.status(), reqwest::StatusCode::OK);
 
     server_handle.abort();
 }

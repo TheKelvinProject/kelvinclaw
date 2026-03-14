@@ -1,13 +1,14 @@
 mod discord;
 mod slack;
 mod telegram;
+mod ui;
 
 use std::net::SocketAddr;
 
 use axum::extract::DefaultBodyLimit;
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum::{Json, Router};
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
@@ -18,6 +19,7 @@ use crate::GatewayState;
 const DEFAULT_INGRESS_BASE_PATH: &str = "/ingress";
 const DEFAULT_INGRESS_MAX_BODY_SIZE_BYTES: usize = 256 * 1024;
 const DEFAULT_SLACK_REPLAY_WINDOW_SECS: u64 = 300;
+const OPERATOR_UI_PATH: &str = "/operator/";
 
 #[derive(Debug, Clone)]
 pub struct GatewayIngressConfig {
@@ -193,6 +195,7 @@ impl GatewayIngressConfig {
                 "bind_scope": if runtime.bind_addr.ip().is_loopback() { "loopback" } else { "public" },
                 "base_path": runtime.base_path,
                 "max_body_size_bytes": runtime.max_body_size_bytes,
+                "operator_ui_path": OPERATOR_UI_PATH,
             }),
             None => json!({ "enabled": false }),
         }
@@ -207,6 +210,10 @@ pub(crate) fn spawn_server(
     let app_state = IngressAppState { gateway, config };
     let base_path = app_state.config.base_path.clone();
     let app = Router::new()
+        .route("/operator", get(ui::index))
+        .route(OPERATOR_UI_PATH, get(ui::index))
+        .route("/operator/app.js", get(ui::script))
+        .route("/operator/styles.css", get(ui::styles))
         .route(&format!("{base_path}/telegram"), post(telegram::handle))
         .route(&format!("{base_path}/slack"), post(slack::handle))
         .route(&format!("{base_path}/discord"), post(discord::handle))

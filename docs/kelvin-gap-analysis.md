@@ -116,7 +116,11 @@ Needed:
 
 Now implemented:
 
-- gateway webchat UI over websocket protocol
+- operator console served from the ingress listener (`/operator/`) with:
+  - gateway overview and security warnings
+  - channel ingress/delivery state
+  - scheduler list/history views
+  - run submission and run inspection
 - gateway health payload and channel status surfaces
 
 ### 4) Rich Context Management (Compaction/Pruning)
@@ -201,5 +205,5 @@ Still open:
 2. Add external plugin repository compatibility-matrix CI lanes.
 3. Add daemon/service management for `kelvin-gateway` (systemd/launchd docs + scripts).
 4. Add gateway security tests for malformed frames, replay pressure, and auth brute-force throttling.
-5. Add a minimal control UI shell consuming gateway methods.
+5. Add plugin/trust-policy/operator pages beyond the current console shell.
 6. Keep consolidating Docker layer/cargo cache reuse across developer and CI scripts without letting `.cache/docker` grow unchecked.

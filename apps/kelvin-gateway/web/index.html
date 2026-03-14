@@ -3,272 +3,162 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>KelvinClaw Gateway UI</title>
-  <style>
-    :root {
-      --bg: #f5f7fb;
-      --panel: #ffffff;
-      --text: #13213a;
-      --muted: #5f6c86;
-      --accent: #006d77;
-      --danger: #b00020;
-      --border: #d9e0ef;
-    }
-    body {
-      margin: 0;
-      font-family: "JetBrains Mono", "Fira Mono", "Menlo", monospace;
-      color: var(--text);
-      background: radial-gradient(circle at top left, #eaf4ff, var(--bg));
-    }
-    .wrap {
-      max-width: 920px;
-      margin: 24px auto;
-      padding: 0 16px;
-      display: grid;
-      gap: 14px;
-    }
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--border);
-      border-radius: 10px;
-      padding: 14px;
-    }
-    .row {
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 8px;
-    }
-    label {
-      display: block;
-      font-size: 12px;
-      color: var(--muted);
-      margin-bottom: 4px;
-    }
-    input, textarea, button {
-      font-family: inherit;
-      font-size: 13px;
-      border: 1px solid var(--border);
-      border-radius: 8px;
-      padding: 8px;
-    }
-    textarea {
-      min-height: 80px;
-      width: 100%;
-      resize: vertical;
-    }
-    button {
-      background: var(--accent);
-      color: #fff;
-      border: 0;
-      cursor: pointer;
-    }
-    button.secondary {
-      background: #6b758d;
-    }
-    .log {
-      background: #0d1321;
-      color: #d4e2ff;
-      min-height: 280px;
-      border-radius: 10px;
-      padding: 10px;
-      overflow: auto;
-      white-space: pre-wrap;
-      word-break: break-word;
-    }
-    .muted {
-      color: var(--muted);
-      font-size: 12px;
-    }
-    .danger { color: var(--danger); }
-  </style>
+  <title>KelvinClaw Operator</title>
+  <link rel="stylesheet" href="styles.css">
 </head>
 <body>
-<div class="wrap">
-  <div class="card">
-    <h2>KelvinClaw Gateway</h2>
-    <div class="row">
+<div class="shell">
+  <header class="hero">
+    <div>
+      <p class="eyebrow">KelvinClaw</p>
+      <h1>Operator Console</h1>
+      <p class="hero-copy">
+        Inspect gateway health, channel ingress, schedules, and live runs from one control surface.
+      </p>
+    </div>
+    <div class="hero-actions">
+      <button id="connectBtn" class="primary">Connect</button>
+      <button id="refreshBtn" class="secondary">Refresh</button>
+    </div>
+  </header>
+
+  <section class="panel connection-panel">
+    <div class="field-grid">
+      <label>
+        <span>WebSocket Endpoint</span>
+        <input id="endpoint" value="ws://127.0.0.1:34617">
+      </label>
+      <label>
+        <span>Gateway Token</span>
+        <input id="token" type="password" autocomplete="off">
+      </label>
+      <label>
+        <span>Auto Refresh</span>
+        <select id="autoRefresh">
+          <option value="0">Manual</option>
+          <option value="5000">5 seconds</option>
+          <option value="10000" selected>10 seconds</option>
+          <option value="30000">30 seconds</option>
+        </select>
+      </label>
+      <label>
+        <span>Status</span>
+        <div id="statusBadge" class="status-badge idle">Disconnected</div>
+      </label>
+    </div>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
       <div>
-        <label for="endpoint">WebSocket Endpoint</label>
-        <input id="endpoint" value="ws://127.0.0.1:34617" />
+        <p class="eyebrow">Overview</p>
+        <h2>Gateway Snapshot</h2>
+      </div>
+      <p id="lastRefresh" class="meta">No refresh yet</p>
+    </div>
+    <div id="overviewCards" class="card-grid"></div>
+    <div class="subgrid">
+      <div>
+        <h3>Security Warnings</h3>
+        <ul id="warningsList" class="warning-list"></ul>
       </div>
       <div>
-        <label for="token">Gateway Token (optional)</label>
-        <input id="token" type="password" autocomplete="off" />
+        <h3>Ingress Discovery</h3>
+        <pre id="ingressDiscovery" class="code-block muted-block">Refresh to load ingress details.</pre>
       </div>
     </div>
-    <div style="margin-top: 8px; display: flex; gap: 8px;">
-      <button id="connectBtn">Connect</button>
-      <button id="healthBtn" class="secondary">Health</button>
-      <span id="status" class="muted">Disconnected</span>
-    </div>
-  </div>
+  </section>
 
-  <div class="card">
-    <h3>Prompt</h3>
-    <label for="prompt">Prompt</label>
-    <textarea id="prompt">What is KelvinClaw?</textarea>
-    <div style="margin-top: 8px; display: flex; gap: 8px; align-items: center;">
-      <button id="sendBtn">Run Agent</button>
-      <span class="muted">Uses method <code>agent</code> + <code>agent.wait</code></span>
-    </div>
-  </div>
+  <section class="dashboard-grid">
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Runs</p>
+          <h2>Submit Prompt</h2>
+        </div>
+      </div>
+      <label>
+        <span>Prompt</span>
+        <textarea id="promptInput">What is KelvinClaw?</textarea>
+      </label>
+      <div class="button-row">
+        <button id="runBtn" class="primary">Run Agent</button>
+        <button id="healthBtn" class="secondary">Health Probe</button>
+      </div>
+      <div id="runSummary" class="summary-card muted-block">No run submitted yet.</div>
+    </section>
 
-  <div class="card">
-    <h3>Event / Response Log</h3>
-    <div id="log" class="log"></div>
-  </div>
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Runs</p>
+          <h2>Inspect Run</h2>
+        </div>
+      </div>
+      <label>
+        <span>Run ID</span>
+        <input id="runIdInput" placeholder="run id">
+      </label>
+      <div class="button-row">
+        <button id="runStateBtn" class="secondary">Load State</button>
+        <button id="runOutcomeBtn" class="secondary">Load Outcome</button>
+      </div>
+      <pre id="runInspector" class="code-block muted-block">Run state will appear here.</pre>
+    </section>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">Channels</p>
+        <h2>Ingress and Delivery State</h2>
+      </div>
+    </div>
+    <div id="channelCards" class="card-grid"></div>
+  </section>
+
+  <section class="dashboard-grid">
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Schedules</p>
+          <h2>Registered Schedules</h2>
+        </div>
+        <button id="scheduleRefreshBtn" class="secondary">Refresh Schedules</button>
+      </div>
+      <div id="scheduleSummary" class="summary-card muted-block">Refresh to load scheduler state.</div>
+      <div id="scheduleTable" class="table-shell empty-state">No schedules loaded.</div>
+    </section>
+
+    <section class="panel">
+      <div class="section-head">
+        <div>
+          <p class="eyebrow">Schedules</p>
+          <h2>History</h2>
+        </div>
+      </div>
+      <label>
+        <span>Schedule Filter</span>
+        <select id="scheduleFilter">
+          <option value="">All schedules</option>
+        </select>
+      </label>
+      <pre id="scheduleHistory" class="code-block muted-block">Refresh schedules to load slot and audit history.</pre>
+    </section>
+  </section>
+
+  <section class="panel">
+    <div class="section-head">
+      <div>
+        <p class="eyebrow">Events</p>
+        <h2>Gateway Log</h2>
+      </div>
+      <button id="clearLogBtn" class="secondary">Clear Log</button>
+    </div>
+    <pre id="log" class="log-block"></pre>
+  </section>
 </div>
 
-<script>
-(() => {
-  const endpointInput = document.getElementById("endpoint");
-  const tokenInput = document.getElementById("token");
-  const promptInput = document.getElementById("prompt");
-  const connectBtn = document.getElementById("connectBtn");
-  const healthBtn = document.getElementById("healthBtn");
-  const sendBtn = document.getElementById("sendBtn");
-  const status = document.getElementById("status");
-  const log = document.getElementById("log");
-
-  let ws = null;
-  let reqSeq = 0;
-  const inflight = new Map();
-
-  function appendLog(line, isError = false) {
-    const ts = new Date().toISOString();
-    const text = `[${ts}] ${line}\n`;
-    if (isError) {
-      log.innerHTML += `<span class="danger">${text.replace(/[<>&]/g, c => ({'<':'&lt;','>':'&gt;','&':'&amp;'}[c]))}</span>`;
-    } else {
-      log.textContent += text;
-    }
-    log.scrollTop = log.scrollHeight;
-  }
-
-  function setStatus(text) {
-    status.textContent = text;
-  }
-
-  function nextId(prefix) {
-    reqSeq += 1;
-    return `${prefix}-${reqSeq}`;
-  }
-
-  function sendRequest(method, params = {}) {
-    if (!ws || ws.readyState !== WebSocket.OPEN) {
-      return Promise.reject(new Error("socket is not connected"));
-    }
-    const id = nextId(method.replace(/\W+/g, "_"));
-    const frame = { type: "req", id, method, params };
-    ws.send(JSON.stringify(frame));
-    return new Promise((resolve, reject) => {
-      inflight.set(id, { resolve, reject, method });
-      setTimeout(() => {
-        if (inflight.has(id)) {
-          inflight.delete(id);
-          reject(new Error(`timeout waiting for ${method}`));
-        }
-      }, 15000);
-    });
-  }
-
-  function setupSocket() {
-    const endpoint = endpointInput.value.trim();
-    if (!endpoint) {
-      appendLog("endpoint is required", true);
-      return;
-    }
-    ws = new WebSocket(endpoint);
-    setStatus("Connecting...");
-
-    ws.onopen = async () => {
-      setStatus("Connected (handshaking)");
-      try {
-        const token = tokenInput.value.trim();
-        const connectPayload = {
-          client_id: "kelvin-webchat",
-          auth: token ? { token } : undefined
-        };
-        const res = await sendRequest("connect", connectPayload);
-        appendLog(`connect ok: ${JSON.stringify(res.payload)}`);
-        setStatus("Connected");
-      } catch (err) {
-        appendLog(`connect failed: ${err.message}`, true);
-        setStatus("Connect failed");
-      }
-    };
-
-    ws.onclose = () => {
-      setStatus("Disconnected");
-      appendLog("socket closed");
-      ws = null;
-    };
-
-    ws.onerror = () => {
-      appendLog("socket error", true);
-    };
-
-    ws.onmessage = (event) => {
-      let frame = null;
-      try {
-        frame = JSON.parse(event.data);
-      } catch {
-        appendLog(`non-json frame: ${event.data}`, true);
-        return;
-      }
-
-      if (frame.type === "res" && frame.id && inflight.has(frame.id)) {
-        const req = inflight.get(frame.id);
-        inflight.delete(frame.id);
-        if (frame.ok) {
-          req.resolve(frame);
-        } else {
-          req.reject(new Error(frame.error?.message || "request failed"));
-        }
-        return;
-      }
-
-      appendLog(`event: ${JSON.stringify(frame)}`);
-    };
-  }
-
-  connectBtn.addEventListener("click", setupSocket);
-
-  healthBtn.addEventListener("click", async () => {
-    try {
-      const res = await sendRequest("health", {});
-      appendLog(`health: ${JSON.stringify(res.payload)}`);
-    } catch (err) {
-      appendLog(`health failed: ${err.message}`, true);
-    }
-  });
-
-  sendBtn.addEventListener("click", async () => {
-    const prompt = promptInput.value.trim();
-    if (!prompt) {
-      appendLog("prompt is required", true);
-      return;
-    }
-    try {
-      const requestId = `web-${Date.now()}`;
-      const submit = await sendRequest("agent", {
-        request_id: requestId,
-        prompt,
-        timeout_ms: 10000
-      });
-      const runId = submit.payload?.run_id;
-      appendLog(`agent accepted: run_id=${runId}`);
-      if (runId) {
-        const wait = await sendRequest("agent.wait", { run_id: runId, timeout_ms: 15000 });
-        appendLog(`agent.wait: ${JSON.stringify(wait.payload)}`);
-        const outcome = await sendRequest("agent.outcome", { run_id: runId, timeout_ms: 15000 });
-        appendLog(`agent.outcome: ${JSON.stringify(outcome.payload)}`);
-      }
-    } catch (err) {
-      appendLog(`agent failed: ${err.message}`, true);
-    }
-  });
-})();
-</script>
+<script src="app.js"></script>
 </body>
 </html>
