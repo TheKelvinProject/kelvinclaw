@@ -13,6 +13,40 @@ require_cmd() {
   fi
 }
 
+create_tar_gz() {
+  local output_path="$1"
+  local base_dir="$2"
+  shift 2
+  local stage_dir=""
+  local rel_path=""
+  local src_path=""
+
+  local -a tar_args=(--format ustar -czf "${output_path}")
+  if tar --help 2>/dev/null | grep -q -- '--sort='; then
+    tar_args=(--sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner "${tar_args[@]}")
+  fi
+  if tar --help 2>/dev/null | grep -q -- '--pax-option'; then
+    tar_args=(--pax-option=delete=atime,delete=ctime "${tar_args[@]}")
+  fi
+
+  stage_dir="$(mktemp -d)"
+  for rel_path in "$@"; do
+    src_path="${base_dir}/${rel_path}"
+    mkdir -p "${stage_dir}/$(dirname "${rel_path}")"
+    if [[ -d "${src_path}" ]]; then
+      cp -R "${src_path}" "${stage_dir}/${rel_path}"
+    else
+      cp -p "${src_path}" "${stage_dir}/${rel_path}"
+    fi
+  done
+  if command -v xattr >/dev/null 2>&1; then
+    xattr -rc "${stage_dir}" >/dev/null 2>&1 || true
+  fi
+
+  COPYFILE_DISABLE=1 COPY_EXTENDED_ATTRIBUTES_DISABLE=1 tar "${tar_args[@]}" -C "${stage_dir}" "$@"
+  rm -rf "${stage_dir}"
+}
+
 sha256_file() {
   local file="$1"
   if command -v shasum >/dev/null 2>&1; then
@@ -504,7 +538,7 @@ cmd_pack() {
   if [[ -f "${manifest_dir}/plugin.sig" ]]; then
     include_sig="plugin.sig"
   fi
-  tar -czf "${output}" -C "${manifest_dir}" plugin.json payload ${include_sig}
+  create_tar_gz "${output}" "${manifest_dir}" plugin.json payload ${include_sig}
   echo "[kelvin-plugin] package created: ${output}"
 }
 
