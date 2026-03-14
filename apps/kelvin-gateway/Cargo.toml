@@ -11,6 +11,8 @@ serde.workspace = true
 serde_json.workspace = true
 futures-util.workspace = true
 tokio-tungstenite.workspace = true
+tokio-rustls.workspace = true
+rustls-pemfile.workspace = true
 reqwest.workspace = true
 url.workspace = true
 kelvin-core = { path = "../../crates/kelvin-core" }

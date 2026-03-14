@@ -8,13 +8,23 @@ Protocol version constant: `1.0.0`.
 
 - connect-first handshake is required
 - optional token auth on connect (`KELVIN_GATEWAY_TOKEN` or `--token`)
+- non-loopback binds fail closed unless TLS is configured or an explicit insecure override is set
+- public binds require an auth token
 - typed request validation (`deny_unknown_fields`)
 - fail-closed unknown method handling
 - idempotency cache for side-effecting `agent` requests via required `request_id`
+- bounded connection count, websocket message/frame sizes, handshake timeout, and per-connection outbound queue
+- auth failure backoff is applied per client IP
 - channel adapters are disabled unless explicitly enabled by environment config
 - Telegram channel defaults to pairing-required and host allowlist checks
 - Slack/Discord channels are available behind explicit env enable flags
 - optional per-channel WASM policy plugin (`kelvin_channel_host_v1`) can deny/shape ingress before routing
+
+## Transport
+
+- loopback/dev default: `ws://127.0.0.1:34617`
+- TLS mode: configure `--tls-cert <path>` and `--tls-key <path>` for built-in `wss`
+- insecure public plaintext requires explicit override: `--allow-insecure-public-bind true`
 
 ## Envelope
 

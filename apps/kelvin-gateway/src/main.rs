@@ -3,7 +3,10 @@ use std::net::SocketAddr;
 use std::path::PathBuf;
 
 use kelvin_core::PluginSecurityPolicy;
-use kelvin_gateway::{run_gateway, run_gateway_doctor, GatewayConfig, GatewayDoctorConfig};
+use kelvin_gateway::{
+    run_gateway, run_gateway_doctor, GatewayConfig, GatewayDoctorConfig, GatewaySecurityConfig,
+    GatewayTlsConfig,
+};
 use kelvin_sdk::{KelvinCliMemoryMode, KelvinSdkModelSelection, KelvinSdkRuntimeConfig};
 
 #[derive(Debug, Clone)]
@@ -26,10 +29,11 @@ struct CliConfig {
     doctor_plugin_home: PathBuf,
     doctor_trust_policy_path: PathBuf,
     doctor_timeout_ms: u64,
+    security: GatewaySecurityConfig,
 }
 
 fn usage() -> &'static str {
-    "Usage: kelvin-gateway [--bind <host:port>] [--token <token>] [--session <id>] [--workspace <dir>] [--memory markdown|in-memory|fallback] [--timeout-ms <ms>] [--state-dir <path>] [--persist-runs true|false] [--max-session-history <n>] [--compact-to <n>] [--model-provider <plugin_id>] [--model-provider-failover <id1,id2,...>] [--failover-retries <n>] [--failover-backoff-ms <ms>] [--load-installed-plugins true|false] [--require-cli-plugin true|false] [--doctor] [--endpoint <ws://host:port>] [--plugin-home <path>] [--trust-policy <path>] [--doctor-timeout-ms <ms>]"
+    "Usage: kelvin-gateway [--bind <host:port>] [--token <token>] [--tls-cert <path>] [--tls-key <path>] [--allow-insecure-public-bind true|false] [--max-connections <n>] [--max-message-bytes <n>] [--max-frame-bytes <n>] [--handshake-timeout-ms <ms>] [--auth-failure-threshold <n>] [--auth-failure-backoff-ms <ms>] [--max-outbound-messages <n>] [--session <id>] [--workspace <dir>] [--memory markdown|in-memory|fallback] [--timeout-ms <ms>] [--state-dir <path>] [--persist-runs true|false] [--max-session-history <n>] [--compact-to <n>] [--model-provider <plugin_id>] [--model-provider-failover <id1,id2,...>] [--failover-retries <n>] [--failover-backoff-ms <ms>] [--load-installed-plugins true|false] [--require-cli-plugin true|false] [--doctor] [--endpoint <ws://host:port>] [--plugin-home <path>] [--trust-policy <path>] [--doctor-timeout-ms <ms>]"
 }
 
 fn parse_bool(value: &str, flag: &str) -> Result<bool, String> {
@@ -41,8 +45,62 @@ fn parse_bool(value: &str, flag: &str) -> Result<bool, String> {
     }
 }
 
+fn parse_u64(value: &str, flag: &str) -> Result<u64, String> {
+    value
+        .parse::<u64>()
+        .map_err(|_| format!("invalid numeric value for {flag}"))
+}
+
+fn parse_u32(value: &str, flag: &str) -> Result<u32, String> {
+    value
+        .parse::<u32>()
+        .map_err(|_| format!("invalid numeric value for {flag}"))
+}
+
+fn parse_usize(value: &str, flag: &str) -> Result<usize, String> {
+    value
+        .parse::<usize>()
+        .map_err(|_| format!("invalid numeric value for {flag}"))
+}
+
+fn env_bool(name: &str, default: bool) -> Result<bool, String> {
+    match env::var(name) {
+        Ok(value) => parse_bool(&value, name),
+        Err(_) => Ok(default),
+    }
+}
+
+fn env_u64(name: &str, default: u64) -> Result<u64, String> {
+    match env::var(name) {
+        Ok(value) => parse_u64(&value, name),
+        Err(_) => Ok(default),
+    }
+}
+
+fn env_u32(name: &str, default: u32) -> Result<u32, String> {
+    match env::var(name) {
+        Ok(value) => parse_u32(&value, name),
+        Err(_) => Ok(default),
+    }
+}
+
+fn env_usize(name: &str, default: usize) -> Result<usize, String> {
+    match env::var(name) {
+        Ok(value) => parse_usize(&value, name),
+        Err(_) => Ok(default),
+    }
+}
+
+fn env_optional_path(name: &str) -> Option<PathBuf> {
+    env::var(name)
+        .ok()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .map(PathBuf::from)
+}
+
 fn parse_args() -> Result<CliConfig, String> {
-    let mut bind_addr: SocketAddr = "127.0.0.1:18789"
+    let mut bind_addr: SocketAddr = "127.0.0.1:34617"
         .parse()
         .map_err(|err| format!("invalid default bind addr: {err}"))?;
     let mut auth_token = env::var("KELVIN_GATEWAY_TOKEN").ok();
@@ -58,13 +116,26 @@ fn parse_args() -> Result<CliConfig, String> {
     let mut load_installed_plugins = true;
     let mut require_cli_plugin_tool = false;
     let mut doctor_mode = false;
-    let mut doctor_endpoint = "ws://127.0.0.1:18789".to_string();
+    let mut doctor_endpoint = "ws://127.0.0.1:34617".to_string();
     let mut doctor_timeout_ms = 5_000_u64;
     let mut doctor_plugin_home = PathBuf::from(".kelvin/plugins");
     let mut doctor_trust_policy_path = PathBuf::from(".kelvin/trusted_publishers.json");
     let mut failover_retries = 1_u8;
     let mut failover_backoff_ms = 100_u64;
     let mut pending_failover_ids: Option<Vec<String>> = None;
+    let mut allow_insecure_public_bind =
+        env_bool("KELVIN_GATEWAY_ALLOW_INSECURE_PUBLIC_BIND", false)?;
+    let mut tls_cert_path = env_optional_path("KELVIN_GATEWAY_TLS_CERT_PATH");
+    let mut tls_key_path = env_optional_path("KELVIN_GATEWAY_TLS_KEY_PATH");
+    let mut max_connections = env_usize("KELVIN_GATEWAY_MAX_CONNECTIONS", 128)?;
+    let mut max_message_size_bytes = env_usize("KELVIN_GATEWAY_MAX_MESSAGE_BYTES", 64 * 1024)?;
+    let mut max_frame_size_bytes = env_usize("KELVIN_GATEWAY_MAX_FRAME_BYTES", 16 * 1024)?;
+    let mut handshake_timeout_ms = env_u64("KELVIN_GATEWAY_HANDSHAKE_TIMEOUT_MS", 5_000)?;
+    let mut auth_failure_threshold = env_u32("KELVIN_GATEWAY_AUTH_FAILURE_THRESHOLD", 3)?;
+    let mut auth_failure_backoff_ms =
+        env_u64("KELVIN_GATEWAY_AUTH_FAILURE_BACKOFF_MS", 1_500)?;
+    let mut max_outbound_messages_per_connection =
+        env_usize("KELVIN_GATEWAY_MAX_OUTBOUND_MESSAGES", 128)?;
 
     let mut args = env::args().skip(1).peekable();
     while let Some(arg) = args.next() {
@@ -116,6 +187,69 @@ fn parse_args() -> Result<CliConfig, String> {
                 } else {
                     Some(trimmed.to_string())
                 };
+            }
+            "--tls-cert" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --tls-cert".to_string())?;
+                tls_cert_path = Some(PathBuf::from(value));
+            }
+            "--tls-key" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --tls-key".to_string())?;
+                tls_key_path = Some(PathBuf::from(value));
+            }
+            "--allow-insecure-public-bind" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --allow-insecure-public-bind".to_string())?;
+                allow_insecure_public_bind =
+                    parse_bool(&value, "--allow-insecure-public-bind")?;
+            }
+            "--max-connections" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --max-connections".to_string())?;
+                max_connections = parse_usize(&value, "--max-connections")?;
+            }
+            "--max-message-bytes" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --max-message-bytes".to_string())?;
+                max_message_size_bytes = parse_usize(&value, "--max-message-bytes")?;
+            }
+            "--max-frame-bytes" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --max-frame-bytes".to_string())?;
+                max_frame_size_bytes = parse_usize(&value, "--max-frame-bytes")?;
+            }
+            "--handshake-timeout-ms" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --handshake-timeout-ms".to_string())?;
+                handshake_timeout_ms = parse_u64(&value, "--handshake-timeout-ms")?;
+            }
+            "--auth-failure-threshold" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --auth-failure-threshold".to_string())?;
+                auth_failure_threshold = parse_u32(&value, "--auth-failure-threshold")?;
+            }
+            "--auth-failure-backoff-ms" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --auth-failure-backoff-ms".to_string())?;
+                auth_failure_backoff_ms =
+                    parse_u64(&value, "--auth-failure-backoff-ms")?;
+            }
+            "--max-outbound-messages" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --max-outbound-messages".to_string())?;
+                max_outbound_messages_per_connection =
+                    parse_usize(&value, "--max-outbound-messages")?;
             }
             "--session" => {
                 default_session_id = args
@@ -237,6 +371,20 @@ fn parse_args() -> Result<CliConfig, String> {
         };
     }
 
+    let tls = match (tls_cert_path, tls_key_path) {
+        (None, None) => None,
+        (Some(cert_path), Some(key_path)) => Some(GatewayTlsConfig {
+            cert_path,
+            key_path,
+        }),
+        (Some(_), None) => {
+            return Err("gateway TLS requires both certificate and key paths".to_string())
+        }
+        (None, Some(_)) => {
+            return Err("gateway TLS requires both certificate and key paths".to_string())
+        }
+    };
+
     Ok(CliConfig {
         bind_addr,
         auth_token,
@@ -256,6 +404,17 @@ fn parse_args() -> Result<CliConfig, String> {
         doctor_plugin_home,
         doctor_trust_policy_path,
         doctor_timeout_ms,
+        security: GatewaySecurityConfig {
+            tls,
+            allow_insecure_public_bind,
+            max_connections,
+            max_message_size_bytes,
+            max_frame_size_bytes,
+            handshake_timeout_ms,
+            auth_failure_threshold,
+            auth_failure_backoff_ms,
+            max_outbound_messages_per_connection,
+        },
     })
 }
 
@@ -322,6 +481,7 @@ async fn main() {
                 bind_addr: config.bind_addr,
                 auth_token: config.auth_token,
                 runtime: runtime_config,
+                security: config.security,
             };
             if let Err(err) = run_gateway(gateway_config).await {
                 eprintln!("gateway error: {err}");

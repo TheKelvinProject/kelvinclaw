@@ -2,8 +2,9 @@ mod channels;
 
 use std::collections::{HashMap, VecDeque};
 use std::fs;
-use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::io::BufReader;
+use std::net::{IpAddr, SocketAddr};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -19,11 +20,14 @@ use kelvin_sdk::{
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::net::{TcpListener, TcpStream};
-use tokio::sync::{broadcast, mpsc, Mutex};
-use tokio::time::Duration;
+use tokio::sync::{broadcast, mpsc, Mutex, Semaphore};
+use tokio::time::{self, Duration};
+use tokio_rustls::rustls::{self, pki_types::CertificateDer, pki_types::PrivateKeyDer};
+use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::connect_async;
-use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::tungstenite::{self, Message};
 
 pub const GATEWAY_PROTOCOL_VERSION: &str = "1.0.0";
 pub const GATEWAY_METHODS_V1: &[&str] = &[
@@ -47,20 +51,69 @@ pub const GATEWAY_METHODS_V1: &[&str] = &[
     "run.wait",
 ];
 
+const DEFAULT_MAX_CONNECTIONS: usize = 128;
+const DEFAULT_MAX_MESSAGE_BYTES: usize = 64 * 1024;
+const DEFAULT_MAX_FRAME_BYTES: usize = 16 * 1024;
+const DEFAULT_HANDSHAKE_TIMEOUT_MS: u64 = 5_000;
+const DEFAULT_AUTH_FAILURE_THRESHOLD: u32 = 3;
+const DEFAULT_AUTH_FAILURE_BACKOFF_MS: u64 = 1_500;
+const DEFAULT_MAX_OUTBOUND_MESSAGES_PER_CONNECTION: usize = 128;
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewayTlsConfig {
+    pub cert_path: PathBuf,
+    pub key_path: PathBuf,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GatewaySecurityConfig {
+    pub tls: Option<GatewayTlsConfig>,
+    pub allow_insecure_public_bind: bool,
+    pub max_connections: usize,
+    pub max_message_size_bytes: usize,
+    pub max_frame_size_bytes: usize,
+    pub handshake_timeout_ms: u64,
+    pub auth_failure_threshold: u32,
+    pub auth_failure_backoff_ms: u64,
+    pub max_outbound_messages_per_connection: usize,
+}
+
+impl Default for GatewaySecurityConfig {
+    fn default() -> Self {
+        Self {
+            tls: None,
+            allow_insecure_public_bind: false,
+            max_connections: DEFAULT_MAX_CONNECTIONS,
+            max_message_size_bytes: DEFAULT_MAX_MESSAGE_BYTES,
+            max_frame_size_bytes: DEFAULT_MAX_FRAME_BYTES,
+            handshake_timeout_ms: DEFAULT_HANDSHAKE_TIMEOUT_MS,
+            auth_failure_threshold: DEFAULT_AUTH_FAILURE_THRESHOLD,
+            auth_failure_backoff_ms: DEFAULT_AUTH_FAILURE_BACKOFF_MS,
+            max_outbound_messages_per_connection: DEFAULT_MAX_OUTBOUND_MESSAGES_PER_CONNECTION,
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct GatewayConfig {
     pub bind_addr: SocketAddr,
     pub auth_token: Option<String>,
     pub runtime: KelvinSdkRuntimeConfig,
+    pub security: GatewaySecurityConfig,
 }
 
 #[derive(Clone)]
 struct GatewayState {
+    bind_addr: SocketAddr,
+    tls_enabled: bool,
     runtime: KelvinSdkRuntime,
     auth_token: Option<String>,
+    security: GatewaySecurityConfig,
     started_at: Instant,
     idempotency: Arc<Mutex<IdempotencyCache>>,
     channels: Arc<Mutex<ChannelEngine>>,
+    auth_failures: Arc<Mutex<AuthFailureTracker>>,
+    connection_semaphore: Arc<Semaphore>,
 }
 
 #[derive(Debug, Clone)]
@@ -75,6 +128,76 @@ struct IdempotencyCache {
     max_entries: usize,
     map: HashMap<String, CachedAgentAcceptance>,
     order: VecDeque<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct AuthFailureEntry {
+    failures: u32,
+    blocked_until_ms: u128,
+}
+
+#[derive(Debug, Default)]
+struct AuthFailureTracker {
+    max_entries: usize,
+    map: HashMap<IpAddr, AuthFailureEntry>,
+    order: VecDeque<IpAddr>,
+}
+
+impl AuthFailureTracker {
+    fn new(max_entries: usize) -> Self {
+        Self {
+            max_entries: max_entries.max(32),
+            map: HashMap::new(),
+            order: VecDeque::new(),
+        }
+    }
+
+    fn backoff_remaining_ms(&mut self, peer_ip: IpAddr) -> Option<u64> {
+        let now = now_ms();
+        let entry = self.map.get_mut(&peer_ip)?;
+        if entry.blocked_until_ms <= now {
+            entry.blocked_until_ms = 0;
+            return None;
+        }
+        let remaining = entry.blocked_until_ms.saturating_sub(now);
+        Some(remaining.min(u128::from(u64::MAX)) as u64)
+    }
+
+    fn record_failure(&mut self, peer_ip: IpAddr, security: &GatewaySecurityConfig) {
+        let now = now_ms();
+        let mut entry = self.map.remove(&peer_ip).unwrap_or(AuthFailureEntry {
+            failures: 0,
+            blocked_until_ms: 0,
+        });
+        entry.failures = entry.failures.saturating_add(1);
+        if entry.failures >= security.auth_failure_threshold {
+            let multiplier = u64::from(
+                entry
+                    .failures
+                    .saturating_sub(security.auth_failure_threshold)
+                    .saturating_add(1),
+            );
+            entry.blocked_until_ms =
+                now.saturating_add(u128::from(security.auth_failure_backoff_ms) * u128::from(multiplier));
+        }
+        self.touch(peer_ip, entry);
+    }
+
+    fn clear(&mut self, peer_ip: IpAddr) {
+        self.map.remove(&peer_ip);
+        self.order.retain(|ip| *ip != peer_ip);
+    }
+
+    fn touch(&mut self, peer_ip: IpAddr, entry: AuthFailureEntry) {
+        self.order.retain(|ip| *ip != peer_ip);
+        if self.max_entries > 0 && self.order.len() >= self.max_entries {
+            if let Some(evicted) = self.order.pop_front() {
+                self.map.remove(&evicted);
+            }
+        }
+        self.order.push_back(peer_ip);
+        self.map.insert(peer_ip, entry);
+    }
 }
 
 impl IdempotencyCache {
@@ -205,6 +328,7 @@ pub async fn run_gateway_doctor(config: GatewayDoctorConfig) -> Result<Value, St
     let mut ws_error: Option<String> = None;
     let mut connect_error: Option<String> = None;
     let mut health_error: Option<String> = None;
+    let mut security_check: Option<(bool, String)> = None;
     let mut doctor_errors = Vec::new();
     let mut checks = Vec::new();
 
@@ -278,6 +402,35 @@ pub async fn run_gateway_doctor(config: GatewayDoctorConfig) -> Result<Value, St
                                 .to_string();
                             health_error = Some(message.clone());
                             doctor_errors.push(message);
+                        } else if let Some(security) =
+                            health_response.get("payload").and_then(|value| value.get("security"))
+                        {
+                            let bind_scope = security
+                                .get("bind_scope")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown");
+                            let tls_enabled = security
+                                .get("tls_enabled")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false);
+                            let insecure_override = security
+                                .get("allow_insecure_public_bind")
+                                .and_then(Value::as_bool)
+                                .unwrap_or(false);
+                            let transport = security
+                                .get("transport")
+                                .and_then(Value::as_str)
+                                .unwrap_or("unknown");
+                            let ok = bind_scope != "public" || tls_enabled || insecure_override;
+                            let message = if bind_scope == "public" && tls_enabled {
+                                format!("gateway public bind is protected by {}", transport)
+                            } else if bind_scope == "public" && insecure_override {
+                                "gateway public bind is using an explicit insecure override"
+                                    .to_string()
+                            } else {
+                                format!("gateway bind scope is {}", bind_scope)
+                            };
+                            security_check = Some((ok, message));
                         }
                     } else {
                         let message = "missing health response from gateway".to_string();
@@ -354,6 +507,14 @@ pub async fn run_gateway_doctor(config: GatewayDoctorConfig) -> Result<Value, St
         health_error.unwrap_or_else(|| "gateway health check succeeded".to_string()),
         "inspect daemon logs and runtime state (scripts/kelvin-gateway-daemon.sh logs), then fix reported runtime errors",
     ));
+    if let Some((ok, message)) = security_check {
+        checks.push(build_doctor_check(
+            "gateway_security_profile",
+            ok,
+            message,
+            "for public binds, configure --token and --tls-cert/--tls-key unless you intentionally opted into the insecure override",
+        ));
+    }
 
     let failed = checks
         .iter()
@@ -412,13 +573,14 @@ async fn wait_for_response(
 }
 
 pub async fn run_gateway(config: GatewayConfig) -> Result<(), String> {
+    validate_gateway_security(config.bind_addr, config.auth_token.as_deref(), &config.security)?;
     let listener = TcpListener::bind(config.bind_addr)
         .await
         .map_err(|err| format!("bind failed on {}: {err}", config.bind_addr))?;
     let runtime = KelvinSdkRuntime::initialize(config.runtime)
         .await
         .map_err(|err| err.to_string())?;
-    run_gateway_with_listener(listener, runtime, config.auth_token).await
+    run_gateway_with_listener_secure(listener, runtime, config.auth_token, config.security).await
 }
 
 pub async fn run_gateway_with_listener(
@@ -426,19 +588,48 @@ pub async fn run_gateway_with_listener(
     runtime: KelvinSdkRuntime,
     auth_token: Option<String>,
 ) -> Result<(), String> {
+    run_gateway_with_listener_secure(
+        listener,
+        runtime,
+        auth_token,
+        GatewaySecurityConfig::default(),
+    )
+    .await
+}
+
+pub async fn run_gateway_with_listener_secure(
+    listener: TcpListener,
+    runtime: KelvinSdkRuntime,
+    auth_token: Option<String>,
+    security: GatewaySecurityConfig,
+) -> Result<(), String> {
     let local_addr = listener
         .local_addr()
         .map_err(|err| format!("local_addr failed: {err}"))?;
-    println!("kelvin-gateway listening on ws://{local_addr}");
+    validate_gateway_security(local_addr, auth_token.as_deref(), &security)?;
+    let tls_acceptor = match security.tls.as_ref() {
+        Some(config) => Some(load_tls_acceptor(config)?),
+        None => None,
+    };
+
+    println!(
+        "kelvin-gateway listening on {}://{local_addr}",
+        gateway_scheme(&security)
+    );
     let channels =
         ChannelEngine::from_env().map_err(|err| format!("initialize channel engine: {err}"))?;
 
     let state = GatewayState {
+        bind_addr: local_addr,
+        tls_enabled: tls_acceptor.is_some(),
         runtime,
         auth_token: auth_token.map(|value| value.trim().to_string()),
+        security: security.clone(),
         started_at: Instant::now(),
         idempotency: Arc::new(Mutex::new(IdempotencyCache::new(2_048))),
         channels: Arc::new(Mutex::new(channels)),
+        auth_failures: Arc::new(Mutex::new(AuthFailureTracker::new(512))),
+        connection_semaphore: Arc::new(Semaphore::new(security.max_connections)),
     };
 
     loop {
@@ -446,21 +637,165 @@ pub async fn run_gateway_with_listener(
             .accept()
             .await
             .map_err(|err| format!("accept failed: {err}"))?;
+        let permit = match state.connection_semaphore.clone().try_acquire_owned() {
+            Ok(permit) => permit,
+            Err(_) => {
+                eprintln!(
+                    "gateway connection rejected for {}: max_connections={} reached",
+                    peer, state.security.max_connections
+                );
+                drop(stream);
+                continue;
+            }
+        };
         let connection_state = state.clone();
+        let acceptor = tls_acceptor.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_connection(stream, connection_state).await {
+            let _permit = permit;
+            let result = match acceptor {
+                Some(acceptor) => match acceptor.accept(stream).await {
+                    Ok(tls_stream) => handle_connection(tls_stream, peer.ip(), connection_state).await,
+                    Err(err) => Err(format!("tls handshake failed: {err}")),
+                },
+                None => handle_connection(stream, peer.ip(), connection_state).await,
+            };
+            if let Err(err) = result {
                 eprintln!("gateway connection error for {peer}: {err}");
             }
         });
     }
 }
 
-async fn handle_connection(stream: TcpStream, state: GatewayState) -> Result<(), String> {
-    let ws_stream = tokio_tungstenite::accept_async(stream)
+fn gateway_scheme(security: &GatewaySecurityConfig) -> &'static str {
+    if security.tls.is_some() {
+        "wss"
+    } else {
+        "ws"
+    }
+}
+
+fn is_loopback_bind(bind_addr: SocketAddr) -> bool {
+    bind_addr.ip().is_loopback()
+}
+
+fn validate_gateway_security(
+    bind_addr: SocketAddr,
+    auth_token: Option<&str>,
+    security: &GatewaySecurityConfig,
+) -> Result<(), String> {
+    if security.max_connections == 0 {
+        return Err("gateway max_connections must be >= 1".to_string());
+    }
+    if security.max_message_size_bytes < 1024 {
+        return Err("gateway max_message_size_bytes must be >= 1024".to_string());
+    }
+    if security.max_frame_size_bytes < 512 {
+        return Err("gateway max_frame_size_bytes must be >= 512".to_string());
+    }
+    if security.max_frame_size_bytes > security.max_message_size_bytes {
+        return Err(
+            "gateway max_frame_size_bytes must be <= max_message_size_bytes".to_string(),
+        );
+    }
+    if security.handshake_timeout_ms < 100 {
+        return Err("gateway handshake_timeout_ms must be >= 100".to_string());
+    }
+    if security.auth_failure_threshold == 0 {
+        return Err("gateway auth_failure_threshold must be >= 1".to_string());
+    }
+    if security.auth_failure_backoff_ms < 100 {
+        return Err("gateway auth_failure_backoff_ms must be >= 100".to_string());
+    }
+    if security.max_outbound_messages_per_connection == 0 {
+        return Err(
+            "gateway max_outbound_messages_per_connection must be >= 1".to_string(),
+        );
+    }
+
+    let public_bind = !is_loopback_bind(bind_addr);
+    let auth_configured = auth_token
+        .map(str::trim)
+        .map(|token| !token.is_empty())
+        .unwrap_or(false);
+    if public_bind && !auth_configured {
+        return Err(format!(
+            "refusing public bind on {} without --token or KELVIN_GATEWAY_TOKEN",
+            bind_addr
+        ));
+    }
+    if public_bind && security.tls.is_none() && !security.allow_insecure_public_bind {
+        return Err(format!(
+            "refusing public bind on {} without TLS; configure --tls-cert/--tls-key or set --allow-insecure-public-bind true for an explicit insecure override",
+            bind_addr
+        ));
+    }
+    if let Some(tls) = &security.tls {
+        if !tls.cert_path.is_file() {
+            return Err(format!(
+                "gateway tls cert is missing: {}",
+                tls.cert_path.to_string_lossy()
+            ));
+        }
+        if !tls.key_path.is_file() {
+            return Err(format!(
+                "gateway tls key is missing: {}",
+                tls.key_path.to_string_lossy()
+            ));
+        }
+    }
+
+    Ok(())
+}
+
+fn load_tls_acceptor(config: &GatewayTlsConfig) -> Result<TlsAcceptor, String> {
+    let certs = load_tls_certs(&config.cert_path)?;
+    let key = load_tls_key(&config.key_path)?;
+    let server_config = rustls::ServerConfig::builder()
+        .with_no_client_auth()
+        .with_single_cert(certs, key)
+        .map_err(|err| format!("invalid gateway tls certificate/key pair: {err}"))?;
+    Ok(TlsAcceptor::from(Arc::new(server_config)))
+}
+
+fn load_tls_certs(path: &Path) -> Result<Vec<CertificateDer<'static>>, String> {
+    let file = std::fs::File::open(path)
+        .map_err(|err| format!("open gateway tls cert '{}': {err}", path.to_string_lossy()))?;
+    let mut reader = BufReader::new(file);
+    rustls_pemfile::certs(&mut reader)
+        .collect::<Result<Vec<_>, _>>()
+        .map_err(|err| format!("read gateway tls cert '{}': {err}", path.to_string_lossy()))
+}
+
+fn load_tls_key(path: &Path) -> Result<PrivateKeyDer<'static>, String> {
+    let file = std::fs::File::open(path)
+        .map_err(|err| format!("open gateway tls key '{}': {err}", path.to_string_lossy()))?;
+    let mut reader = BufReader::new(file);
+    rustls_pemfile::private_key(&mut reader)
+        .map_err(|err| format!("read gateway tls key '{}': {err}", path.to_string_lossy()))?
+        .ok_or_else(|| format!("gateway tls key '{}' did not contain a private key", path.to_string_lossy()))
+}
+
+async fn handle_connection<S>(
+    stream: S,
+    peer_ip: IpAddr,
+    state: GatewayState,
+) -> Result<(), String>
+where
+    S: AsyncRead + AsyncWrite + Unpin + Send + 'static,
+{
+    let ws_stream = tokio_tungstenite::accept_async_with_config(
+        stream,
+        Some(tungstenite::protocol::WebSocketConfig {
+            max_message_size: Some(state.security.max_message_size_bytes),
+            max_frame_size: Some(state.security.max_frame_size_bytes),
+            ..Default::default()
+        }),
+    )
         .await
         .map_err(|err| format!("websocket upgrade failed: {err}"))?;
     let (mut sink, mut source) = ws_stream.split();
-    let (writer_tx, mut writer_rx) = mpsc::unbounded_channel::<Message>();
+    let (writer_tx, mut writer_rx) =
+        mpsc::channel::<Message>(state.security.max_outbound_messages_per_connection);
 
     let writer_task = tokio::spawn(async move {
         while let Some(message) = writer_rx.recv().await {
@@ -470,25 +805,55 @@ async fn handle_connection(stream: TcpStream, state: GatewayState) -> Result<(),
         }
     });
 
-    let first_message = match source.next().await {
-        Some(Ok(Message::Text(text))) => text,
-        Some(Ok(_)) => {
+    if let Some(remaining_ms) = state.auth_failures.lock().await.backoff_remaining_ms(peer_ip) {
+        let _ = send_error(
+            &writer_tx,
+            "",
+            "unauthorized",
+            &format!("auth backoff active; retry after {}ms", remaining_ms),
+        );
+        let _ = writer_tx.try_send(Message::Close(None));
+        drop(writer_tx);
+        let _ = writer_task.await;
+        return Ok(());
+    }
+
+    let first_message = match time::timeout(
+        Duration::from_millis(state.security.handshake_timeout_ms),
+        source.next(),
+    )
+    .await
+    {
+        Err(_) => {
+            let _ = send_error(
+                &writer_tx,
+                "",
+                "timeout",
+                "connect handshake timed out",
+            );
+            let _ = writer_tx.try_send(Message::Close(None));
+            drop(writer_tx);
+            let _ = writer_task.await;
+            return Ok(());
+        }
+        Ok(Some(Ok(Message::Text(text)))) => text,
+        Ok(Some(Ok(_))) => {
             let _ = send_error(
                 &writer_tx,
                 "",
                 "handshake_required",
                 "first frame must be a connect request",
             );
-            let _ = writer_tx.send(Message::Close(None));
+            let _ = writer_tx.try_send(Message::Close(None));
             drop(writer_tx);
             let _ = writer_task.await;
             return Ok(());
         }
-        Some(Err(err)) => {
+        Ok(Some(Err(err))) => {
             writer_task.abort();
             return Err(format!("receive failed: {err}"));
         }
-        None => {
+        Ok(None) => {
             writer_task.abort();
             return Ok(());
         }
@@ -517,7 +882,7 @@ async fn handle_connection(stream: TcpStream, state: GatewayState) -> Result<(),
         Ok(params) => params,
         Err(err) => {
             let _ = send_gateway_error(&writer_tx, &first_id, err);
-            let _ = writer_tx.send(Message::Close(None));
+            let _ = writer_tx.try_send(Message::Close(None));
             drop(writer_tx);
             let _ = writer_task.await;
             return Ok(());
@@ -527,12 +892,18 @@ async fn handle_connection(stream: TcpStream, state: GatewayState) -> Result<(),
         .client_id
         .unwrap_or_else(|| "unknown".to_string());
     if let Err(err) = verify_auth_token(state.auth_token.as_deref(), connect_params.auth.as_ref()) {
+        state
+            .auth_failures
+            .lock()
+            .await
+            .record_failure(peer_ip, &state.security);
         let _ = send_gateway_error(&writer_tx, &first_id, err);
-        let _ = writer_tx.send(Message::Close(None));
+        let _ = writer_tx.try_send(Message::Close(None));
         drop(writer_tx);
         let _ = writer_task.await;
         return Ok(());
     }
+    state.auth_failures.lock().await.clear(peer_ip);
     send_ok(
         &writer_tx,
         &first_id,
@@ -612,19 +983,38 @@ async fn handle_request(
     params: Value,
 ) -> Result<Value, GatewayErrorPayload> {
     match method {
-        "health" => Ok(json!({
-            "status": "ok",
-            "protocol_version": GATEWAY_PROTOCOL_VERSION,
-            "supported_methods": GATEWAY_METHODS_V1,
-            "uptime_ms": state.started_at.elapsed().as_millis(),
-            "loaded_installed_plugins": state.runtime.loaded_installed_plugins(),
-            "channels": {
-                "routing": state.channels.lock().await.routing_status(),
-                "telegram": state.channels.lock().await.telegram_status(),
-                "slack": state.channels.lock().await.slack_status(),
-                "discord": state.channels.lock().await.discord_status(),
-            },
-        })),
+        "health" => {
+            let channels = state.channels.lock().await;
+            Ok(json!({
+                "status": "ok",
+                "protocol_version": GATEWAY_PROTOCOL_VERSION,
+                "supported_methods": GATEWAY_METHODS_V1,
+                "uptime_ms": state.started_at.elapsed().as_millis(),
+                "loaded_installed_plugins": state.runtime.loaded_installed_plugins(),
+                "security": {
+                    "transport": gateway_scheme(&state.security),
+                    "bind_addr": state.bind_addr.to_string(),
+                    "bind_scope": if is_loopback_bind(state.bind_addr) { "loopback" } else { "public" },
+                    "tls_enabled": state.tls_enabled,
+                    "auth_required": state.auth_token.is_some(),
+                    "allow_insecure_public_bind": state.security.allow_insecure_public_bind,
+                    "max_connections": state.security.max_connections,
+                    "max_message_size_bytes": state.security.max_message_size_bytes,
+                    "max_frame_size_bytes": state.security.max_frame_size_bytes,
+                    "handshake_timeout_ms": state.security.handshake_timeout_ms,
+                    "auth_failure_threshold": state.security.auth_failure_threshold,
+                    "auth_failure_backoff_ms": state.security.auth_failure_backoff_ms,
+                    "max_outbound_messages_per_connection": state.security.max_outbound_messages_per_connection,
+                    "max_inflight_requests_per_connection": 1,
+                },
+                "channels": {
+                    "routing": channels.routing_status(),
+                    "telegram": channels.telegram_status(),
+                    "slack": channels.slack_status(),
+                    "discord": channels.discord_status(),
+                },
+            }))
+        }
         "agent" | "run.submit" => {
             let params: AgentParams = parse_params(params, method)?;
             submit_agent(state, params).await
@@ -835,7 +1225,7 @@ fn map_kelvin_error(err: KelvinError) -> GatewayErrorPayload {
 }
 
 fn send_ok(
-    writer_tx: &mpsc::UnboundedSender<Message>,
+    writer_tx: &mpsc::Sender<Message>,
     id: &str,
     payload: Value,
 ) -> Result<(), String> {
@@ -849,7 +1239,7 @@ fn send_ok(
 }
 
 fn send_error(
-    writer_tx: &mpsc::UnboundedSender<Message>,
+    writer_tx: &mpsc::Sender<Message>,
     id: &str,
     code: &str,
     message: &str,
@@ -865,7 +1255,7 @@ fn send_error(
 }
 
 fn send_gateway_error(
-    writer_tx: &mpsc::UnboundedSender<Message>,
+    writer_tx: &mpsc::Sender<Message>,
     id: &str,
     error: GatewayErrorPayload,
 ) -> Result<(), String> {
@@ -879,7 +1269,7 @@ fn send_gateway_error(
 }
 
 fn send_event(
-    writer_tx: &mpsc::UnboundedSender<Message>,
+    writer_tx: &mpsc::Sender<Message>,
     event: &kelvin_core::AgentEvent,
 ) -> Result<(), String> {
     let payload = serde_json::to_value(event).map_err(|err| err.to_string())?;
@@ -891,13 +1281,13 @@ fn send_event(
 }
 
 fn send_frame(
-    writer_tx: &mpsc::UnboundedSender<Message>,
+    writer_tx: &mpsc::Sender<Message>,
     frame: ServerFrame,
 ) -> Result<(), String> {
     let text = serde_json::to_string(&frame).map_err(|err| err.to_string())?;
     writer_tx
-        .send(Message::Text(text))
-        .map_err(|_| "connection closed".to_string())
+        .try_send(Message::Text(text))
+        .map_err(|_| "connection closed or writer queue full".to_string())
 }
 
 #[cfg(test)]
@@ -979,6 +1369,49 @@ mod tests {
         for method in methods {
             assert!(is_supported_method(method), "missing method from allowlist");
         }
+    }
+
+    #[test]
+    fn public_bind_requires_secure_profile_by_default() {
+        let bind_addr: SocketAddr = "0.0.0.0:34617".parse().expect("bind addr");
+        let error = validate_gateway_security(bind_addr, None, &GatewaySecurityConfig::default())
+            .expect_err("public bind should fail closed");
+        assert!(error.contains("without --token"), "unexpected error: {error}");
+
+        let error = validate_gateway_security(
+            bind_addr,
+            Some("secret"),
+            &GatewaySecurityConfig::default(),
+        )
+        .expect_err("public ws bind should require tls or override");
+        assert!(error.contains("without TLS"), "unexpected error: {error}");
+    }
+
+    #[test]
+    fn public_bind_can_use_explicit_insecure_override() {
+        let bind_addr: SocketAddr = "0.0.0.0:34617".parse().expect("bind addr");
+        let mut security = GatewaySecurityConfig::default();
+        security.allow_insecure_public_bind = true;
+        validate_gateway_security(bind_addr, Some("secret"), &security)
+            .expect("explicit insecure override should allow public ws bind");
+    }
+
+    #[test]
+    fn auth_failure_tracker_enforces_backoff_window() {
+        let mut tracker = AuthFailureTracker::new(32);
+        let security = GatewaySecurityConfig {
+            auth_failure_threshold: 1,
+            auth_failure_backoff_ms: 5_000,
+            ..GatewaySecurityConfig::default()
+        };
+        let peer_ip: IpAddr = "127.0.0.1".parse().expect("peer ip");
+        tracker.record_failure(peer_ip, &security);
+        let remaining = tracker
+            .backoff_remaining_ms(peer_ip)
+            .expect("backoff should be active");
+        assert!(remaining > 0);
+        tracker.clear(peer_ip);
+        assert!(tracker.backoff_remaining_ms(peer_ip).is_none());
     }
 
     #[tokio::test]

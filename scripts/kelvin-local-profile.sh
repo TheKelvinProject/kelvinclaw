@@ -8,7 +8,7 @@ PROFILE_DIR="${KELVIN_LOCAL_PROFILE_DIR:-${ROOT_DIR}/.kelvin/local-profile}"
 PLUGIN_HOME="${KELVIN_PLUGIN_HOME:-${ROOT_DIR}/.kelvin/plugins}"
 TRUST_POLICY_PATH="${KELVIN_TRUST_POLICY_PATH:-${ROOT_DIR}/.kelvin/trusted_publishers.json}"
 STATE_DIR="${KELVIN_STATE_DIR:-${ROOT_DIR}/.kelvin/state}"
-GATEWAY_BIND="${KELVIN_LOCAL_GATEWAY_BIND:-127.0.0.1:18789}"
+GATEWAY_BIND="${KELVIN_LOCAL_GATEWAY_BIND:-127.0.0.1:34617}"
 MEMORY_ADDR="${KELVIN_LOCAL_MEMORY_ADDR:-127.0.0.1:50051}"
 
 MEMORY_PID_FILE="${PROFILE_DIR}/memory-controller.pid"
@@ -55,6 +55,37 @@ is_running() {
   local pid
   pid="$(cat "${pid_file}")"
   [[ -n "${pid}" ]] && kill -0 "${pid}" >/dev/null 2>&1
+}
+
+is_loopback_bind() {
+  local bind="$1"
+  local host="${bind%:*}"
+  [[ "${host}" == "127.0.0.1" || "${host}" == "::1" || "${host}" == "[::1]" || "${host}" == "localhost" ]]
+}
+
+validate_gateway_exposure() {
+  if is_loopback_bind "${GATEWAY_BIND}"; then
+    return 0
+  fi
+
+  if [[ -z "${KELVIN_GATEWAY_TOKEN:-}" ]]; then
+    echo "[kelvin-local-profile] refusing public gateway bind without KELVIN_GATEWAY_TOKEN" >&2
+    exit 1
+  fi
+
+  if [[ -n "${KELVIN_GATEWAY_TLS_CERT_PATH:-}" && -n "${KELVIN_GATEWAY_TLS_KEY_PATH:-}" ]]; then
+    return 0
+  fi
+
+  case "${KELVIN_GATEWAY_ALLOW_INSECURE_PUBLIC_BIND:-0}" in
+    1|true|TRUE|yes|YES|on|ON)
+      echo "[kelvin-local-profile] warning: explicit insecure public bind override enabled" >&2
+      return 0
+      ;;
+  esac
+
+  echo "[kelvin-local-profile] refusing public gateway bind without TLS; set KELVIN_GATEWAY_TLS_CERT_PATH and KELVIN_GATEWAY_TLS_KEY_PATH or explicitly opt into KELVIN_GATEWAY_ALLOW_INSECURE_PUBLIC_BIND=1" >&2
+  exit 1
 }
 
 write_memory_dev_keys() {
@@ -169,6 +200,8 @@ start_gateway() {
     return 0
   fi
 
+  validate_gateway_exposure
+
   local -a gateway_args=(
     --bind "${GATEWAY_BIND}"
     --session "main"
@@ -182,6 +215,14 @@ start_gateway() {
   if [[ -n "${KELVIN_GATEWAY_TOKEN:-}" ]]; then
     gateway_args+=(--token "${KELVIN_GATEWAY_TOKEN}")
   fi
+  if [[ -n "${KELVIN_GATEWAY_TLS_CERT_PATH:-}" && -n "${KELVIN_GATEWAY_TLS_KEY_PATH:-}" ]]; then
+    gateway_args+=(--tls-cert "${KELVIN_GATEWAY_TLS_CERT_PATH}" --tls-key "${KELVIN_GATEWAY_TLS_KEY_PATH}")
+  fi
+  case "${KELVIN_GATEWAY_ALLOW_INSECURE_PUBLIC_BIND:-0}" in
+    1|true|TRUE|yes|YES|on|ON)
+      gateway_args+=(--allow-insecure-public-bind true)
+      ;;
+  esac
   if [[ -n "${OPENAI_API_KEY:-}" ]]; then
     gateway_args+=(--model-provider "kelvin.openai")
   fi

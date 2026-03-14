@@ -200,7 +200,7 @@ Run the gateway with connect-token auth:
 ```bash
 KELVIN_GATEWAY_TOKEN=change-me \
 CARGO_TARGET_DIR=target/try-kelvin-gateway cargo run -p kelvin-gateway -- \
-  --bind 127.0.0.1:18789 \
+  --bind 127.0.0.1:34617 \
   --workspace /path/to/workspace
 ```
 

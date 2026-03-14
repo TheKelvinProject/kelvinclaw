@@ -3,7 +3,10 @@ use std::sync::LazyLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use futures_util::{SinkExt, StreamExt};
-use kelvin_gateway::{run_gateway_with_listener, GATEWAY_METHODS_V1, GATEWAY_PROTOCOL_VERSION};
+use kelvin_gateway::{
+    run_gateway_with_listener_secure, GatewaySecurityConfig,
+    GATEWAY_METHODS_V1, GATEWAY_PROTOCOL_VERSION,
+};
 use kelvin_sdk::{
     KelvinCliMemoryMode, KelvinSdkModelSelection, KelvinSdkRuntime, KelvinSdkRuntimeConfig,
 };
@@ -53,6 +56,13 @@ fn unique_workspace(prefix: &str) -> PathBuf {
 }
 
 async fn start_gateway(auth_token: Option<&str>) -> (String, JoinHandle<()>) {
+    start_gateway_with_security(auth_token, GatewaySecurityConfig::default()).await
+}
+
+async fn start_gateway_with_security(
+    auth_token: Option<&str>,
+    security: GatewaySecurityConfig,
+) -> (String, JoinHandle<()>) {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind test listener");
@@ -79,7 +89,7 @@ async fn start_gateway(auth_token: Option<&str>) -> (String, JoinHandle<()>) {
 
     let token = auth_token.map(|value| value.to_string());
     let handle = tokio::spawn(async move {
-        let _ = run_gateway_with_listener(listener, runtime, token).await;
+        let _ = run_gateway_with_listener_secure(listener, runtime, token, security).await;
     });
     sleep(Duration::from_millis(75)).await;
     (format!("ws://{addr}"), handle)
@@ -226,6 +236,9 @@ async fn gateway_agent_submit_wait_and_idempotency_flow_works() {
         health_response["payload"]["supported_methods"],
         json!(GATEWAY_METHODS_V1)
     );
+    assert_eq!(health_response["payload"]["security"]["transport"], json!("ws"));
+    assert_eq!(health_response["payload"]["security"]["bind_scope"], json!("loopback"));
+    assert_eq!(health_response["payload"]["security"]["max_inflight_requests_per_connection"], json!(1));
 
     send_request(
         &mut socket,
@@ -277,6 +290,77 @@ async fn gateway_agent_submit_wait_and_idempotency_flow_works() {
     let wait_response = read_until_response(&mut socket, "wait-1").await;
     assert_eq!(wait_response["ok"], json!(true));
     assert_eq!(wait_response["payload"]["status"], json!("ok"));
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_applies_auth_backoff_after_failed_connect_attempts() {
+    let _guard = ENV_LOCK.lock().await;
+    let security = GatewaySecurityConfig {
+        auth_failure_threshold: 1,
+        auth_failure_backoff_ms: 5_000,
+        ..GatewaySecurityConfig::default()
+    };
+    let (url, server_handle) = start_gateway_with_security(Some("secret"), security).await;
+
+    let (mut first_socket, _) = connect_async(url.clone()).await.expect("connect");
+    send_request(&mut first_socket, "connect-fail-1", "connect", json!({})).await;
+    let first_response = read_until_response(&mut first_socket, "connect-fail-1").await;
+    assert_eq!(first_response["ok"], json!(false));
+    assert_eq!(first_response["error"]["code"], json!("unauthorized"));
+
+    let (mut second_socket, _) = connect_async(url).await.expect("connect");
+    let second_response = read_until_response(&mut second_socket, "").await;
+    assert_eq!(second_response["ok"], json!(false));
+    assert_eq!(second_response["error"]["code"], json!("unauthorized"));
+    assert!(
+        second_response["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("backoff"),
+        "expected backoff message in {:?}",
+        second_response
+    );
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_closes_connection_on_oversized_frame() {
+    let _guard = ENV_LOCK.lock().await;
+    let security = GatewaySecurityConfig {
+        max_message_size_bytes: 1024,
+        max_frame_size_bytes: 512,
+        ..GatewaySecurityConfig::default()
+    };
+    let (url, server_handle) = start_gateway_with_security(Some("secret"), security).await;
+    let (mut socket, _) = connect_async(url).await.expect("connect");
+
+    send_request(
+        &mut socket,
+        "connect-small",
+        "connect",
+        json!({
+            "auth": {"token": "secret"},
+            "client_id": "integration-test",
+        }),
+    )
+    .await;
+    let connect_response = read_until_response(&mut socket, "connect-small").await;
+    assert_eq!(connect_response["ok"], json!(true));
+
+    let oversized = format!("{{\"type\":\"req\",\"id\":\"huge\",\"method\":\"health\",\"params\":{{\"padding\":\"{}\"}}}}", "x".repeat(512));
+    socket
+        .send(Message::Text(oversized))
+        .await
+        .expect("send oversized frame");
+
+    match socket.next().await {
+        Some(Ok(Message::Close(_))) | None => {}
+        Some(Err(_)) => {}
+        other => panic!("expected socket close or error, got {other:?}"),
+    }
 
     server_handle.abort();
 }

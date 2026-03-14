@@ -52,8 +52,19 @@ start_daemon() {
   build_binary_if_needed
   local gateway_args=("$@")
   if [[ "${#gateway_args[@]}" -eq 0 ]]; then
-    gateway_args=(--bind 127.0.0.1:18789)
+    gateway_args=(--bind 127.0.0.1:34617)
   fi
+  if [[ -n "${KELVIN_GATEWAY_TOKEN:-}" ]]; then
+    gateway_args+=(--token "${KELVIN_GATEWAY_TOKEN}")
+  fi
+  if [[ -n "${KELVIN_GATEWAY_TLS_CERT_PATH:-}" && -n "${KELVIN_GATEWAY_TLS_KEY_PATH:-}" ]]; then
+    gateway_args+=(--tls-cert "${KELVIN_GATEWAY_TLS_CERT_PATH}" --tls-key "${KELVIN_GATEWAY_TLS_KEY_PATH}")
+  fi
+  case "${KELVIN_GATEWAY_ALLOW_INSECURE_PUBLIC_BIND:-0}" in
+    1|true|TRUE|yes|YES|on|ON)
+      gateway_args+=(--allow-insecure-public-bind true)
+      ;;
+  esac
 
   (
     cd "${ROOT_DIR}"
