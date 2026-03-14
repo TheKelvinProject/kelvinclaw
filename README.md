@@ -452,6 +452,11 @@ scripts/plugin-trust.sh revoke --publisher acme
 scripts/plugin-trust.sh pin --plugin acme.echo --publisher acme
 ```
 
+GitHub Actions automation:
+
+- `.github/workflows/memory-kms-smoke.yml` runs the live AWS KMS memory signer
+  roundtrip through GitHub OIDC on a Blacksmith runner.
+
 Plugin author workflow:
 
 ```bash
