@@ -36,6 +36,20 @@ scripts/verify-onboarding.sh --track wasm
 scripts/verify-onboarding.sh --track daily
 ```
 
+## Linux Release Executables
+
+Tagged releases publish Linux executable bundles for:
+
+- `kelvin-host`
+- `kelvin-gateway`
+- `kelvin-memory-controller`
+- `kelvin-registry`
+
+The release workflow is backed by Blacksmith runners and produces native
+`linux-x86_64` and `linux-arm64` tarballs with matching SHA-256 files.
+For manual validation without publishing a GitHub Release, run the
+`Release Linux Executables` workflow with `workflow_dispatch`.
+
 ## Repository Layout
 
 - `apps/kelvin-host`: thin trusted host executable
