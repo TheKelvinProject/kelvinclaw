@@ -1,5 +1,6 @@
 /target
 **/target/
+dist/
 **/*.rs.bk
 
 # OS cruft
