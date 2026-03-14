@@ -47,3 +47,4 @@ futures-util = "0.3"
 tokio-tungstenite = "0.24"
 tokio-rustls = "0.26"
 rustls-pemfile = "2"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }

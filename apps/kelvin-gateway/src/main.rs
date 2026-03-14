@@ -4,8 +4,8 @@ use std::path::PathBuf;
 
 use kelvin_core::PluginSecurityPolicy;
 use kelvin_gateway::{
-    run_gateway, run_gateway_doctor, GatewayConfig, GatewayDoctorConfig, GatewaySecurityConfig,
-    GatewayTlsConfig,
+    run_gateway, run_gateway_doctor, GatewayConfig, GatewayDoctorConfig, GatewayIngressConfig,
+    GatewaySecurityConfig, GatewayTlsConfig,
 };
 use kelvin_sdk::{KelvinCliMemoryMode, KelvinSdkModelSelection, KelvinSdkRuntimeConfig};
 
@@ -30,10 +30,11 @@ struct CliConfig {
     doctor_trust_policy_path: PathBuf,
     doctor_timeout_ms: u64,
     security: GatewaySecurityConfig,
+    ingress: GatewayIngressConfig,
 }
 
 fn usage() -> &'static str {
-    "Usage: kelvin-gateway [--bind <host:port>] [--token <token>] [--tls-cert <path>] [--tls-key <path>] [--allow-insecure-public-bind true|false] [--max-connections <n>] [--max-message-bytes <n>] [--max-frame-bytes <n>] [--handshake-timeout-ms <ms>] [--auth-failure-threshold <n>] [--auth-failure-backoff-ms <ms>] [--max-outbound-messages <n>] [--session <id>] [--workspace <dir>] [--memory markdown|in-memory|fallback] [--timeout-ms <ms>] [--state-dir <path>] [--persist-runs true|false] [--max-session-history <n>] [--compact-to <n>] [--model-provider <plugin_id>] [--model-provider-failover <id1,id2,...>] [--failover-retries <n>] [--failover-backoff-ms <ms>] [--load-installed-plugins true|false] [--require-cli-plugin true|false] [--doctor] [--endpoint <ws://host:port>] [--plugin-home <path>] [--trust-policy <path>] [--doctor-timeout-ms <ms>]"
+    "Usage: kelvin-gateway [--bind <host:port>] [--token <token>] [--tls-cert <path>] [--tls-key <path>] [--allow-insecure-public-bind true|false] [--max-connections <n>] [--max-message-bytes <n>] [--max-frame-bytes <n>] [--handshake-timeout-ms <ms>] [--auth-failure-threshold <n>] [--auth-failure-backoff-ms <ms>] [--max-outbound-messages <n>] [--ingress-bind <host:port>] [--ingress-base-path <path>] [--ingress-max-body-bytes <n>] [--session <id>] [--workspace <dir>] [--memory markdown|in-memory|fallback] [--timeout-ms <ms>] [--state-dir <path>] [--persist-runs true|false] [--max-session-history <n>] [--compact-to <n>] [--model-provider <plugin_id>] [--model-provider-failover <id1,id2,...>] [--failover-retries <n>] [--failover-backoff-ms <ms>] [--load-installed-plugins true|false] [--require-cli-plugin true|false] [--doctor] [--endpoint <ws://host:port>] [--plugin-home <path>] [--trust-policy <path>] [--doctor-timeout-ms <ms>]"
 }
 
 fn parse_bool(value: &str, flag: &str) -> Result<bool, String> {
@@ -135,6 +136,9 @@ fn parse_args() -> Result<CliConfig, String> {
     let mut auth_failure_backoff_ms = env_u64("KELVIN_GATEWAY_AUTH_FAILURE_BACKOFF_MS", 1_500)?;
     let mut max_outbound_messages_per_connection =
         env_usize("KELVIN_GATEWAY_MAX_OUTBOUND_MESSAGES", 128)?;
+    let mut ingress_bind_addr: Option<SocketAddr> = None;
+    let mut ingress_base_path: Option<String> = None;
+    let mut ingress_max_body_size_bytes: Option<usize> = None;
 
     let mut args = env::args().skip(1).peekable();
     while let Some(arg) = args.next() {
@@ -247,6 +251,29 @@ fn parse_args() -> Result<CliConfig, String> {
                     .ok_or_else(|| "missing value for --max-outbound-messages".to_string())?;
                 max_outbound_messages_per_connection =
                     parse_usize(&value, "--max-outbound-messages")?;
+            }
+            "--ingress-bind" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --ingress-bind".to_string())?;
+                ingress_bind_addr = Some(
+                    value
+                        .parse::<SocketAddr>()
+                        .map_err(|err| format!("invalid --ingress-bind value '{value}': {err}"))?,
+                );
+            }
+            "--ingress-base-path" => {
+                ingress_base_path = Some(
+                    args.next()
+                        .ok_or_else(|| "missing value for --ingress-base-path".to_string())?,
+                );
+            }
+            "--ingress-max-body-bytes" => {
+                let value = args
+                    .next()
+                    .ok_or_else(|| "missing value for --ingress-max-body-bytes".to_string())?;
+                ingress_max_body_size_bytes =
+                    Some(parse_usize(&value, "--ingress-max-body-bytes")?);
             }
             "--session" => {
                 default_session_id = args
@@ -381,6 +408,12 @@ fn parse_args() -> Result<CliConfig, String> {
             return Err("gateway TLS requires both certificate and key paths".to_string())
         }
     };
+    let ingress = GatewayIngressConfig::from_env_overrides(
+        ingress_bind_addr,
+        ingress_base_path,
+        ingress_max_body_size_bytes,
+        allow_insecure_public_bind,
+    )?;
 
     Ok(CliConfig {
         bind_addr,
@@ -412,6 +445,7 @@ fn parse_args() -> Result<CliConfig, String> {
             auth_failure_backoff_ms,
             max_outbound_messages_per_connection,
         },
+        ingress,
     })
 }
 
@@ -479,6 +513,7 @@ async fn main() {
                 auth_token: config.auth_token,
                 runtime: runtime_config,
                 security: config.security,
+                ingress: config.ingress,
             };
             if let Err(err) = run_gateway(gateway_config).await {
                 eprintln!("gateway error: {err}");

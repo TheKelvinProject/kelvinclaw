@@ -15,6 +15,9 @@ tokio-rustls.workspace = true
 rustls-pemfile.workspace = true
 reqwest.workspace = true
 url.workspace = true
+axum = "0.8"
+ed25519-dalek.workspace = true
+ring = "0.17"
 kelvin-core = { path = "../../crates/kelvin-core" }
 kelvin-sdk = { path = "../../crates/kelvin-sdk", default-features = false }
 kelvin-wasm = { path = "../../crates/kelvin-wasm" }

@@ -10,6 +10,7 @@ Protocol version constant: `1.0.0`.
 - optional token auth on connect (`KELVIN_GATEWAY_TOKEN` or `--token`)
 - non-loopback binds fail closed unless TLS is configured or an explicit insecure override is set
 - public binds require an auth token
+- direct HTTP ingress is disabled unless `KELVIN_GATEWAY_INGRESS_BIND` or `--ingress-bind` is set
 - typed request validation (`deny_unknown_fields`)
 - fail-closed unknown method handling
 - idempotency cache for side-effecting `agent` requests via required `request_id`
@@ -25,6 +26,19 @@ Protocol version constant: `1.0.0`.
 - loopback/dev default: `ws://127.0.0.1:34617`
 - TLS mode: configure `--tls-cert <path>` and `--tls-key <path>` for built-in `wss`
 - insecure public plaintext requires explicit override: `--allow-insecure-public-bind true`
+
+Optional direct channel ingress runs on a separate HTTP listener:
+
+- configure `KELVIN_GATEWAY_INGRESS_BIND` or `--ingress-bind <host:port>`
+- optional route prefix: `KELVIN_GATEWAY_INGRESS_BASE_PATH` or `--ingress-base-path <path>`
+- optional body limit: `KELVIN_GATEWAY_INGRESS_MAX_BODY_BYTES` or `--ingress-max-body-bytes <n>`
+- default base path: `/ingress`
+- routes:
+  - `POST /ingress/telegram`
+  - `POST /ingress/slack`
+  - `POST /ingress/discord`
+
+Direct ingress listener state is exposed in `health.payload.ingress`.
 
 ## Envelope
 
@@ -111,6 +125,7 @@ Telegram channel is configured only via environment variables and remains disabl
 - custom Telegram base URL requires `KELVIN_TELEGRAM_ALLOW_CUSTOM_BASE_URL=true`
 - pairing is enabled by default (`KELVIN_TELEGRAM_PAIRING_ENABLED=true`)
 - allowlist is optional (`KELVIN_TELEGRAM_ALLOW_CHAT_IDS=...`)
+- direct webhook verification uses `KELVIN_TELEGRAM_WEBHOOK_SECRET_TOKEN`
 - inbound dedupe, per-chat rate limits, and bounded retries are always applied
 
 ## Slack + Discord Policy
@@ -128,6 +143,10 @@ Common policy controls per channel include:
 - probation cooldown (`*_COOLDOWN_MS_PROBATION`)
 - bounded inbox + delivery-id dedupe (`*_MAX_QUEUE_DEPTH`, `*_MAX_SEEN_DELIVERY_IDS`)
 - bounded outbound retries (`*_OUTBOUND_MAX_RETRIES`, `*_OUTBOUND_RETRY_BACKOFF_MS`)
+- direct webhook verification:
+  - Slack: `KELVIN_SLACK_SIGNING_SECRET`
+  - Slack replay window: `KELVIN_SLACK_WEBHOOK_REPLAY_WINDOW_SECS`
+  - Discord interactions: `KELVIN_DISCORD_INTERACTIONS_PUBLIC_KEY`
 
 Default base URL host allowlist is enforced unless explicitly relaxed:
 
@@ -160,6 +179,14 @@ Route output fields:
 - `route_system_prompt`
 
 Gateway includes route metadata in channel ingest responses.
+
+## Channel Health
+
+Per-channel status (`channel.<platform>.status`) includes:
+
+- ingress verification state (`method`, `configured`, last success/failure timestamps, last verification error)
+- ingress connectivity state (last request time, last accepted time, last HTTP status)
+- retry and deny counters for direct webhook traffic alongside existing ingest/dedupe/rate/outbound counters
 
 ## WASM Channel Plugin ABI
 

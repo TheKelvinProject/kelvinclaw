@@ -31,6 +31,7 @@ Optional fields:
 - `runtime` (`wasm_tool_v1` or `wasm_model_v1`)
 - `tool_name` (tool runtime)
 - `provider_name` + `model_name` (model runtime)
+- `provider_profile` (recommended for generic model runtime host routing)
 - `capability_scopes` / `operational_controls`
 - `quality_tier` (`unsigned_local`, `signed_community`, `signed_trusted`)
 

@@ -76,6 +76,7 @@ Options:
   --out <dir>               Output directory (default: ./plugin-<id>)
   --tool-name <name>        Tool runtime: tool name (default: derived from id)
   --provider-name <name>    Model runtime: provider name (default: derived from id)
+  --provider-profile <id>   Model runtime: host-enforced provider profile id (example: openai.responses)
   --model-name <name>       Model runtime: model name (default: default)
   --entrypoint <path>       Relative wasm payload path (default: plugin.wasm)
   --quality-tier <tier>     unsigned_local|signed_community|signed_trusted (default: unsigned_local)
@@ -220,8 +221,12 @@ validate_manifest_and_layout() {
       echo "wasm_model_v1 requires capability 'model_provider'" >&2
       return 1
     }
-    jq -e '.provider_name | type=="string" and length>0' "${manifest_path}" >/dev/null || {
-      echo "wasm_model_v1 requires non-empty provider_name" >&2
+    jq -e '(.provider_name // "" | type=="string") and (.provider_profile // "" | type=="string")' "${manifest_path}" >/dev/null || {
+      echo "wasm_model_v1 provider_name/provider_profile fields must be strings when present" >&2
+      return 1
+    }
+    jq -e '((.provider_name // "") | length > 0) or ((.provider_profile // "") | length > 0)' "${manifest_path}" >/dev/null || {
+      echo "wasm_model_v1 requires non-empty provider_name or provider_profile" >&2
       return 1
     }
     jq -e '.model_name | type=="string" and length>0' "${manifest_path}" >/dev/null || {
@@ -310,7 +315,7 @@ validate_manifest_and_layout() {
 
 cmd_new() {
   local id="" name="" version="0.1.0" runtime="wasm_tool_v1" out="" tool_name=""
-  local provider_name="" model_name="default" entrypoint="plugin.wasm" quality_tier="unsigned_local"
+  local provider_name="" provider_profile="" model_name="default" entrypoint="plugin.wasm" quality_tier="unsigned_local"
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -321,6 +326,7 @@ cmd_new() {
       --out) out="${2:?missing value for --out}"; shift 2 ;;
       --tool-name) tool_name="${2:?missing value for --tool-name}"; shift 2 ;;
       --provider-name) provider_name="${2:?missing value for --provider-name}"; shift 2 ;;
+      --provider-profile) provider_profile="${2:?missing value for --provider-profile}"; shift 2 ;;
       --model-name) model_name="${2:?missing value for --model-name}"; shift 2 ;;
       --entrypoint) entrypoint="${2:?missing value for --entrypoint}"; shift 2 ;;
       --quality-tier) quality_tier="${2:?missing value for --quality-tier}"; shift 2 ;;
@@ -355,7 +361,11 @@ cmd_new() {
     tool_name="$(tr '.-' '_' <<< "${id}")"
   fi
   if [[ -z "${provider_name}" ]]; then
-    provider_name="$(tr '.-' '_' <<< "${id}")"
+    case "${provider_profile}" in
+      openai.responses) provider_name="openai" ;;
+      anthropic.messages) provider_name="anthropic" ;;
+      *) provider_name="$(tr '.-' '_' <<< "${id}")" ;;
+    esac
   fi
 
   local capabilities runtime_extra
@@ -363,8 +373,12 @@ cmd_new() {
     capabilities='["model_provider","network_egress"]'
     runtime_extra="$(jq -cn \
       --arg provider_name "${provider_name}" \
+      --arg provider_profile "${provider_profile}" \
       --arg model_name "${model_name}" \
-      '{provider_name:$provider_name, model_name:$model_name}')"
+      '{
+        provider_name:$provider_name,
+        model_name:$model_name
+      } + (if $provider_profile == "" then {} else {provider_profile:$provider_profile} end)')"
   else
     capabilities='["tool_provider"]'
     runtime_extra="$(jq -cn --arg tool_name "${tool_name}" '{tool_name:$tool_name}')"

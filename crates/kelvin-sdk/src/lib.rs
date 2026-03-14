@@ -27,7 +27,14 @@ use kelvin_memory::MemoryFactory;
 #[cfg(feature = "memory_rpc")]
 use kelvin_memory_client::{MemoryClientConfig, RpcMemoryManager};
 
+pub mod scheduler;
 mod toolpack;
+
+pub use scheduler::{
+    ClaimedScheduleSlot, NewScheduledTask, ScheduleAuditEntry, ScheduleReplyDelivery,
+    ScheduleReplyTarget, ScheduleSlotPhase, ScheduleSlotRecord, ScheduledTask, SchedulerStatus,
+    SchedulerStore,
+};
 
 const MIN_DEFAULT_TIMEOUT_MS: u64 = 100;
 const MAX_DEFAULT_TIMEOUT_MS: u64 = 300_000;
@@ -1005,6 +1012,7 @@ pub struct KelvinSdkRuntime {
     loaded_installed_plugins: usize,
     event_tx: broadcast::Sender<AgentEvent>,
     persistence: RuntimePersistence,
+    scheduler_store: Arc<SchedulerStore>,
 }
 
 impl KelvinSdkRuntime {
@@ -1016,6 +1024,10 @@ impl KelvinSdkRuntime {
             config.max_session_history_messages,
             config.compact_to_messages,
         )?;
+        let scheduler_store = Arc::new(SchedulerStore::new(
+            config.state_dir.clone(),
+            &config.workspace_dir,
+        )?);
         let session_store = Arc::new(FileBackedSessionStore::load(persistence.clone())?);
         let (event_tx, _) = broadcast::channel(1_024);
         let event_sink: Arc<dyn EventSink> = if config.emit_stdout_events {
@@ -1031,7 +1043,7 @@ impl KelvinSdkRuntime {
             "Hello from Kelvin SDK built-in tools.",
         ));
         let (toolpack_tools, toolpack_count) =
-            toolpack::load_default_toolpack_plugins(&config.core_version)?;
+            toolpack::load_default_toolpack_plugins(&config.core_version, scheduler_store.clone())?;
         println!("loaded kelvin core toolpack plugins: {toolpack_count}");
 
         let (installed_tools, installed_models, loaded_installed_plugins): LoadedInstalledPlugins =
@@ -1128,6 +1140,7 @@ impl KelvinSdkRuntime {
             loaded_installed_plugins,
             event_tx,
             persistence,
+            scheduler_store,
         })
     }
 
@@ -1137,6 +1150,10 @@ impl KelvinSdkRuntime {
 
     pub fn state_dir(&self) -> Option<&Path> {
         self.persistence.state_dir.as_deref()
+    }
+
+    pub fn scheduler_store(&self) -> Arc<SchedulerStore> {
+        self.scheduler_store.clone()
     }
 
     pub fn subscribe_events(&self) -> broadcast::Receiver<AgentEvent> {
@@ -1372,7 +1389,10 @@ mod tests {
     use async_trait::async_trait;
     use base64::Engine as _;
     use ed25519_dalek::{Signer, SigningKey};
-    use kelvin_core::{KelvinError, ModelInput, ModelOutput, ModelProvider, RunOutcome};
+    use kelvin_core::{
+        KelvinError, ModelInput, ModelOutput, ModelProvider, RunOutcome,
+        ANTHROPIC_MESSAGES_PROFILE_ID, OPENAI_RESPONSES_PROFILE_ID,
+    };
     use mockito::Server;
     use serde_json::json;
     use sha2::{Digest, Sha256};
@@ -1548,11 +1568,11 @@ mod tests {
         )
     }
 
-    fn model_test_wasm() -> Vec<u8> {
-        parse_wat(
+    fn model_test_wasm(import_name: &str) -> Vec<u8> {
+        parse_wat(&format!(
             r#"
             (module
-              (import "kelvin_model_host_v1" "openai_responses_call" (func $openai_responses_call (param i32 i32) (result i64)))
+              (import "kelvin_model_host_v1" "{import_name}" (func $provider_call (param i32 i32) (result i64)))
               (import "kelvin_model_host_v1" "log" (func $log (param i32 i32 i32) (result i32)))
               (import "kelvin_model_host_v1" "clock_now_ms" (func $clock_now_ms (result i64)))
               (memory (export "memory") 2)
@@ -1569,10 +1589,10 @@ mod tests {
               (func (export "infer") (param $ptr i32) (param $len i32) (result i64)
                 local.get $ptr
                 local.get $len
-                call $openai_responses_call)
+                call $provider_call)
             )
             "#,
-        )
+        ))
     }
 
     fn test_signing_key() -> SigningKey {
@@ -1666,35 +1686,42 @@ mod tests {
         write_trust_policy_file(trust_policy_path, &signing_key);
     }
 
-    fn seed_openai_plugin_for_mock_host(
+    #[allow(clippy::too_many_arguments)]
+    fn seed_model_plugin_for_mock_host(
         plugin_home: &Path,
         trust_policy_path: &Path,
+        plugin_id: &str,
+        plugin_name: &str,
+        provider_name: &str,
+        provider_profile: &str,
+        model_name: &str,
         allow_host: &str,
+        entrypoint: &str,
     ) {
         let signing_key = test_signing_key();
-        let wasm_bytes = model_test_wasm();
-        let plugin_id = "acme.openai";
+        let wasm_bytes = model_test_wasm("provider_profile_call");
         write_signed_plugin(
             plugin_home,
             plugin_id,
             "0.1.0",
-            "kelvin_openai.wasm",
+            entrypoint,
             &wasm_bytes,
             json!({
                 "id": plugin_id,
-                "name": "Acme OpenAI Plugin",
+                "name": plugin_name,
                 "version": "0.1.0",
                 "api_version": "1.0.0",
-                "description": "test openai model plugin",
-                "homepage": "https://example.com/openai-plugin",
+                "description": format!("test {provider_name} model plugin"),
+                "homepage": format!("https://example.com/{provider_name}-plugin"),
                 "capabilities": ["model_provider"],
                 "experimental": false,
                 "min_core_version": "0.1.0",
                 "max_core_version": null,
                 "runtime": "wasm_model_v1",
-                "provider_name": "openai",
-                "model_name": "gpt-4.1-mini",
-                "entrypoint": "kelvin_openai.wasm",
+                "provider_name": provider_name,
+                "provider_profile": provider_profile,
+                "model_name": model_name,
+                "entrypoint": entrypoint,
                 "entrypoint_sha256": null,
                 "publisher": TEST_PUBLISHER_ID,
                 "capability_scopes": {
@@ -1712,6 +1739,42 @@ mod tests {
             &signing_key,
         );
         write_trust_policy_file(trust_policy_path, &signing_key);
+    }
+
+    fn seed_openai_plugin_for_mock_host(
+        plugin_home: &Path,
+        trust_policy_path: &Path,
+        allow_host: &str,
+    ) {
+        seed_model_plugin_for_mock_host(
+            plugin_home,
+            trust_policy_path,
+            "acme.openai",
+            "Acme OpenAI Plugin",
+            "openai",
+            OPENAI_RESPONSES_PROFILE_ID,
+            "gpt-4.1-mini",
+            allow_host,
+            "kelvin_openai.wasm",
+        );
+    }
+
+    fn seed_anthropic_plugin_for_mock_host(
+        plugin_home: &Path,
+        trust_policy_path: &Path,
+        allow_host: &str,
+    ) {
+        seed_model_plugin_for_mock_host(
+            plugin_home,
+            trust_policy_path,
+            "acme.anthropic",
+            "Acme Anthropic Plugin",
+            "anthropic",
+            ANTHROPIC_MESSAGES_PROFILE_ID,
+            "claude-3-5-haiku-latest",
+            allow_host,
+            "kelvin_anthropic.wasm",
+        );
     }
 
     #[tokio::test]
@@ -1836,6 +1899,189 @@ mod tests {
             .payloads
             .iter()
             .any(|payload| payload.contains("mock-openai-ok")));
+    }
+
+    #[tokio::test]
+    async fn run_with_sdk_uses_installed_anthropic_model_plugin_via_mock_server() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let workspace = unique_workspace();
+        let plugin_home = workspace.join("plugins");
+        let trust_policy = workspace.join("trusted_publishers.json");
+        seed_cli_plugin_for_tests(&plugin_home, &trust_policy);
+
+        let mut server = Server::new_async().await;
+        let response_body = json!({
+            "assistant_text": "mock-anthropic-ok",
+            "stop_reason": "completed",
+            "tool_calls": [],
+            "usage": {
+                "input_tokens": 12,
+                "output_tokens": 5,
+                "total_tokens": 17
+            }
+        })
+        .to_string();
+        let mock = server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(response_body)
+            .create_async()
+            .await;
+        let base_url = server.url();
+        let allow_host = "127.0.0.1".to_string();
+        seed_anthropic_plugin_for_mock_host(&plugin_home, &trust_policy, &allow_host);
+
+        let previous_plugin_home = std::env::var("KELVIN_PLUGIN_HOME").ok();
+        let previous_trust_policy = std::env::var("KELVIN_TRUST_POLICY_PATH").ok();
+        let previous_anthropic_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        let previous_anthropic_base = std::env::var("ANTHROPIC_BASE_URL").ok();
+        std::env::set_var("KELVIN_PLUGIN_HOME", plugin_home.as_os_str());
+        std::env::set_var("KELVIN_TRUST_POLICY_PATH", trust_policy.as_os_str());
+        std::env::set_var("ANTHROPIC_API_KEY", "test-anthropic-key");
+        std::env::set_var("ANTHROPIC_BASE_URL", &base_url);
+
+        let mut config = KelvinSdkConfig::for_prompt("hello anthropic");
+        config.workspace_dir = workspace.clone();
+        config.timeout_ms = 5_000;
+        config.memory_mode = KelvinCliMemoryMode::Fallback;
+        config.load_installed_plugins = true;
+        config.model_provider = KelvinSdkModelSelection::InstalledPlugin {
+            plugin_id: "acme.anthropic".to_string(),
+        };
+
+        let result = run_with_sdk(config)
+            .await
+            .expect("run with anthropic plugin");
+        mock.assert_async().await;
+
+        match previous_plugin_home {
+            Some(value) => std::env::set_var("KELVIN_PLUGIN_HOME", value),
+            None => std::env::remove_var("KELVIN_PLUGIN_HOME"),
+        }
+        match previous_trust_policy {
+            Some(value) => std::env::set_var("KELVIN_TRUST_POLICY_PATH", value),
+            None => std::env::remove_var("KELVIN_TRUST_POLICY_PATH"),
+        }
+        match previous_anthropic_key {
+            Some(value) => std::env::set_var("ANTHROPIC_API_KEY", value),
+            None => std::env::remove_var("ANTHROPIC_API_KEY"),
+        }
+        match previous_anthropic_base {
+            Some(value) => std::env::set_var("ANTHROPIC_BASE_URL", value),
+            None => std::env::remove_var("ANTHROPIC_BASE_URL"),
+        }
+
+        assert_eq!(result.provider, "anthropic");
+        assert_eq!(result.model, "claude-3-5-haiku-latest");
+        assert!(result
+            .payloads
+            .iter()
+            .any(|payload| payload.contains("mock-anthropic-ok")));
+    }
+
+    #[tokio::test]
+    async fn run_with_sdk_installed_provider_failover_uses_second_profile() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let workspace = unique_workspace();
+        let plugin_home = workspace.join("plugins");
+        let trust_policy = workspace.join("trusted_publishers.json");
+        seed_cli_plugin_for_tests(&plugin_home, &trust_policy);
+
+        let mut openai_server = Server::new_async().await;
+        let openai_mock = openai_server
+            .mock("POST", "/v1/responses")
+            .with_status(503)
+            .with_body("upstream unavailable")
+            .create_async()
+            .await;
+        let mut anthropic_server = Server::new_async().await;
+        let anthropic_response = json!({
+            "assistant_text": "mock-failover-anthropic-ok",
+            "stop_reason": "completed",
+            "tool_calls": [],
+            "usage": {
+                "input_tokens": 7,
+                "output_tokens": 6,
+                "total_tokens": 13
+            }
+        })
+        .to_string();
+        let anthropic_mock = anthropic_server
+            .mock("POST", "/v1/messages")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(anthropic_response)
+            .create_async()
+            .await;
+        let allow_host = "127.0.0.1".to_string();
+        seed_openai_plugin_for_mock_host(&plugin_home, &trust_policy, &allow_host);
+        seed_anthropic_plugin_for_mock_host(&plugin_home, &trust_policy, &allow_host);
+
+        let previous_plugin_home = std::env::var("KELVIN_PLUGIN_HOME").ok();
+        let previous_trust_policy = std::env::var("KELVIN_TRUST_POLICY_PATH").ok();
+        let previous_openai_key = std::env::var("OPENAI_API_KEY").ok();
+        let previous_openai_base = std::env::var("OPENAI_BASE_URL").ok();
+        let previous_anthropic_key = std::env::var("ANTHROPIC_API_KEY").ok();
+        let previous_anthropic_base = std::env::var("ANTHROPIC_BASE_URL").ok();
+        std::env::set_var("KELVIN_PLUGIN_HOME", plugin_home.as_os_str());
+        std::env::set_var("KELVIN_TRUST_POLICY_PATH", trust_policy.as_os_str());
+        std::env::set_var("OPENAI_API_KEY", "test-openai-key");
+        std::env::set_var("OPENAI_BASE_URL", openai_server.url());
+        std::env::set_var("ANTHROPIC_API_KEY", "test-anthropic-key");
+        std::env::set_var("ANTHROPIC_BASE_URL", anthropic_server.url());
+
+        let mut config = KelvinSdkConfig::for_prompt("hello failover");
+        config.workspace_dir = workspace.clone();
+        config.timeout_ms = 5_000;
+        config.memory_mode = KelvinCliMemoryMode::Fallback;
+        config.load_installed_plugins = true;
+        config.model_provider = KelvinSdkModelSelection::InstalledPluginFailover {
+            plugin_ids: vec!["acme.openai".to_string(), "acme.anthropic".to_string()],
+            max_retries_per_provider: 0,
+            retry_backoff_ms: 1,
+        };
+
+        let result = run_with_sdk(config).await.expect("run with model failover");
+        openai_mock.assert_async().await;
+        anthropic_mock.assert_async().await;
+
+        match previous_plugin_home {
+            Some(value) => std::env::set_var("KELVIN_PLUGIN_HOME", value),
+            None => std::env::remove_var("KELVIN_PLUGIN_HOME"),
+        }
+        match previous_trust_policy {
+            Some(value) => std::env::set_var("KELVIN_TRUST_POLICY_PATH", value),
+            None => std::env::remove_var("KELVIN_TRUST_POLICY_PATH"),
+        }
+        match previous_openai_key {
+            Some(value) => std::env::set_var("OPENAI_API_KEY", value),
+            None => std::env::remove_var("OPENAI_API_KEY"),
+        }
+        match previous_openai_base {
+            Some(value) => std::env::set_var("OPENAI_BASE_URL", value),
+            None => std::env::remove_var("OPENAI_BASE_URL"),
+        }
+        match previous_anthropic_key {
+            Some(value) => std::env::set_var("ANTHROPIC_API_KEY", value),
+            None => std::env::remove_var("ANTHROPIC_API_KEY"),
+        }
+        match previous_anthropic_base {
+            Some(value) => std::env::set_var("ANTHROPIC_BASE_URL", value),
+            None => std::env::remove_var("ANTHROPIC_BASE_URL"),
+        }
+
+        assert_eq!(result.provider, "kelvin.failover");
+        assert!(result.model.contains("openai/gpt-4.1-mini"));
+        assert!(result.model.contains("anthropic/claude-3-5-haiku-latest"));
+        assert!(result
+            .payloads
+            .iter()
+            .any(|payload| payload.contains("mock-failover-anthropic-ok")));
     }
 
     #[tokio::test]
