@@ -43,6 +43,10 @@ Root-side client signing can use:
 - `KELVIN_MEMORY_SIGNING_KEY_PEM` or `KELVIN_MEMORY_SIGNING_KEY_PATH`
 - `KELVIN_MEMORY_SIGNING_KMS_KEY_ID` with optional `KELVIN_MEMORY_SIGNING_KMS_REGION`
 
+GitHub Actions validation can use the Blacksmith-backed workflow
+`.github/workflows/memory-kms-smoke.yml`, which assumes
+`arn:aws:iam::997752499028:role/ah-gha-kelvin-memory-kms-test` via GitHub OIDC.
+
 The controller does not call KMS directly; it verifies against the exported public
 key PEM configured above.
 
