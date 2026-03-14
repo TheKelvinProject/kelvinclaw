@@ -19,3 +19,4 @@ Rotate Root signing keys used for memory delegation JWTs without downtime.
 - controller accepts new tokens.
 - controller rejects old tokens after cutover window.
 - no replay cache explosion or authz bypass during transition.
+- `.github/workflows/memory-kms-smoke.yml` passes against `REDACTED_MEMORY_KMS_ALIAS`.

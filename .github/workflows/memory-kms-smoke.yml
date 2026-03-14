@@ -1,0 +1,40 @@
+name: Memory KMS Smoke
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+concurrency:
+  group: memory-kms-smoke-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  smoke:
+    name: Memory KMS Smoke
+    runs-on: blacksmith-2vcpu-ubuntu-2404
+    timeout-minutes: 30
+    env:
+      AWS_REGION: us-east-1
+      AWS_ROLE_ARN: arn:aws:iam::REDACTED_ACCOUNT_ID:role/REDACTED_MEMORY_ROLE_NAME
+      KELVIN_TEST_AWS_KMS_MEMORY_KEY_ID: REDACTED_MEMORY_KMS_ALIAS
+      KELVIN_TEST_AWS_KMS_MEMORY_REGION: us-east-1
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ env.AWS_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: stable
+
+      - name: Run live KMS memory signer smoke
+        run: cargo test -p kelvin-memory-client rpc_memory_manager_kms_signing_roundtrip -- --nocapture
