@@ -70,6 +70,7 @@ See:
 - [docs/model-plugin-abi.md](docs/model-plugin-abi.md)
 - [docs/channel-plugin-abi.md](docs/channel-plugin-abi.md)
 - [docs/openai-plugin-install-and-run.md](docs/openai-plugin-install-and-run.md)
+- [docs/anthropic-plugin-install-and-run.md](docs/anthropic-plugin-install-and-run.md)
 - [docs/runtime-container-first-run.md](docs/runtime-container-first-run.md)
 - [docs/plugin-index-schema.md](docs/plugin-index-schema.md)
 - [docs/toolpack-sdk-plugins.md](docs/toolpack-sdk-plugins.md)
@@ -120,6 +121,7 @@ The runtime integrates through the Kelvin Core SDK path:
 - `SdkModelProviderRegistry` (validated model-provider projection)
 - `kelvin_cli` (CLI plugin executed before each run)
 - `kelvin.openai` (first-party OpenAI model plugin, optional)
+- `kelvin.anthropic` (first-party Anthropic model plugin, optional)
 - Kelvin Core tool-pack plugins (`fs_safe_read`, `fs_safe_write`, `web_fetch_safe`, `schedule_cron`, `session_tools`)
 
 ## Trusted Executive + Untrusted Skills
@@ -177,6 +179,16 @@ KELVIN_TRUST_POLICY_PATH=.kelvin/trusted_publishers.json \
 CARGO_TARGET_DIR=target/try-kelvin-cli cargo run -p kelvin-host -- --prompt "hello" --model-provider kelvin.openai --workspace /path/to/workspace --memory fallback
 ```
 
+Anthropic provider path:
+
+```bash
+scripts/install-kelvin-anthropic-plugin.sh
+ANTHROPIC_API_KEY=<your_key> \
+KELVIN_PLUGIN_HOME=.kelvin/plugins \
+KELVIN_TRUST_POLICY_PATH=.kelvin/trusted_publishers.json \
+CARGO_TARGET_DIR=target/try-kelvin-cli cargo run -p kelvin-host -- --prompt "hello" --model-provider kelvin.anthropic --workspace /path/to/workspace --memory fallback
+```
+
 The CLI executable is only a thin launcher. Runtime behavior is composed in `kelvin-sdk`, and
 the CLI path executes through an installed plugin (`kelvin_cli`) loaded through the
 same secure installed-plugin path as third-party plugins.
@@ -203,6 +215,25 @@ CARGO_TARGET_DIR=target/try-kelvin-gateway cargo run -p kelvin-gateway -- \
   --bind 127.0.0.1:34617 \
   --workspace /path/to/workspace
 ```
+
+Optional direct platform ingress can run on a separate HTTP listener:
+
+```bash
+KELVIN_GATEWAY_TOKEN=change-me \
+KELVIN_GATEWAY_INGRESS_BIND=127.0.0.1:34618 \
+KELVIN_TELEGRAM_WEBHOOK_SECRET_TOKEN=telegram-secret \
+KELVIN_SLACK_SIGNING_SECRET=slack-signing-secret \
+KELVIN_DISCORD_INTERACTIONS_PUBLIC_KEY=<hex-public-key> \
+CARGO_TARGET_DIR=target/try-kelvin-gateway cargo run -p kelvin-gateway -- \
+  --bind 127.0.0.1:34617 \
+  --workspace /path/to/workspace
+```
+
+Direct ingress routes:
+
+- `POST /ingress/telegram`
+- `POST /ingress/slack`
+- `POST /ingress/discord`
 
 Methods available over the socket:
 

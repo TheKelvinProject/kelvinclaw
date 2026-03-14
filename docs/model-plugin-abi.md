@@ -8,9 +8,14 @@ This document defines the v1 ABI and runtime contract for installed WASM model-p
 - Manifest `capabilities` must include `model_provider`.
 - Manifest must include:
   - `entrypoint`
-  - `provider_name`
+  - `provider_name` or `provider_profile`
   - `model_name`
   - `capability_scopes.network_allow_hosts` (non-empty for model runtime)
+
+Recommended manifest fields for new plugins:
+
+- `provider_profile`: host-enforced profile id (`openai.responses`, `anthropic.messages`)
+- `provider_name`: optional when it matches the selected profile
 
 ## Guest Exports
 
@@ -27,6 +32,7 @@ The WASM guest module must export:
 
 The runtime only allows imports from module `kelvin_model_host_v1`:
 
+- `provider_profile_call(req_ptr: i32, req_len: i32) -> i64`
 - `openai_responses_call(req_ptr: i32, req_len: i32) -> i64`
 - `log(level: i32, msg_ptr: i32, msg_len: i32) -> i32`
 - `clock_now_ms() -> i64`
@@ -76,9 +82,29 @@ The loader maps this to a typed backend failure (fail-closed).
 
 The host executes HTTPS calls; guest code never opens raw sockets.
 
-## OpenAI Host Call
+## Provider Profile Host Call
 
-`openai_responses_call` is implemented by the trusted host:
+`provider_profile_call` is implemented by the trusted host and resolves the outbound provider from the plugin manifest's `provider_profile`.
+
+Built-in host-enforced profiles:
+
+- `openai.responses`
+  - endpoint: `POST /v1/responses`
+  - key source: `OPENAI_API_KEY`
+  - base URL override: `OPENAI_BASE_URL`
+  - default allowlist host: `api.openai.com`
+- `anthropic.messages`
+  - endpoint: `POST /v1/messages`
+  - key source: `ANTHROPIC_API_KEY`
+  - base URL override: `ANTHROPIC_BASE_URL`
+  - default allowlist host: `api.anthropic.com`
+  - fixed header: `anthropic-version: 2023-06-01`
+
+The guest passes provider-specific JSON request payloads; the host supplies auth, endpoint selection, and host allowlist enforcement.
+
+## Legacy OpenAI Host Call
+
+`openai_responses_call` remains available for legacy `wasm_model_v1` plugins:
 
 - endpoint: `POST /v1/responses`
 - key source: `OPENAI_API_KEY` (required)

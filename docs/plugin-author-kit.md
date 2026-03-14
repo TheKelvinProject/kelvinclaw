@@ -41,6 +41,8 @@ Reference templates:
 - `templates/plugin-author-kit/wasm_tool/plugin.json.template`
 - `templates/plugin-author-kit/wasm_model/plugin.json.template`
 
+For new model plugins, prefer the generic host-routed `provider_profile` field (`openai.responses`, `anthropic.messages`) instead of the legacy provider-specific host import.
+
 ## Signing
 
 ```bash

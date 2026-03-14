@@ -17,8 +17,9 @@ use wasmparser::{Parser, Payload};
 
 use kelvin_core::{
     InMemoryPluginRegistry, KelvinError, KelvinResult, ModelInput, ModelOutput, ModelProvider,
-    PluginCapability, PluginFactory, PluginManifest, PluginRegistry, PluginSecurityPolicy,
-    SdkModelProviderRegistry, SdkToolRegistry, Tool, ToolCallInput, ToolCallResult,
+    ModelProviderProfile, PluginCapability, PluginFactory, PluginManifest, PluginRegistry,
+    PluginSecurityPolicy, SdkModelProviderRegistry, SdkToolRegistry, Tool, ToolCallInput,
+    ToolCallResult, OPENAI_RESPONSES_PROFILE_ID,
 };
 use kelvin_wasm::{
     model_abi, ClawCall, ModelSandboxPolicy, SandboxPolicy, WasmModelHost, WasmSkillHost,
@@ -41,6 +42,7 @@ pub struct LoadedInstalledPlugin {
     pub tool_name: Option<String>,
     pub provider_name: Option<String>,
     pub model_name: Option<String>,
+    pub provider_profile: Option<String>,
     pub runtime: String,
     pub publisher: Option<String>,
 }
@@ -340,6 +342,7 @@ struct InstalledPluginPackageManifest {
     runtime: Option<String>,
     tool_name: Option<String>,
     provider_name: Option<String>,
+    provider_profile: Option<String>,
     model_name: Option<String>,
     entrypoint: String,
     entrypoint_sha256: Option<String>,
@@ -453,8 +456,13 @@ impl InstalledPluginPackageManifest {
         Ok(candidate)
     }
 
-    fn resolved_provider_name(&self) -> KelvinResult<String> {
-        let fallback = self.id.replace('.', "_");
+    fn resolved_provider_name(
+        &self,
+        provider_profile: Option<&ModelProviderProfile>,
+    ) -> KelvinResult<String> {
+        let fallback = provider_profile
+            .map(|profile| profile.provider_name.clone())
+            .unwrap_or_else(|| self.id.replace('.', "_"));
         let candidate = self
             .provider_name
             .as_deref()
@@ -476,6 +484,14 @@ impl InstalledPluginPackageManifest {
                 self.id, candidate
             )));
         }
+        if let Some(profile) = provider_profile {
+            if candidate != profile.provider_name {
+                return Err(KelvinError::InvalidInput(format!(
+                    "plugin '{}' provider_name '{}' does not match provider_profile '{}'",
+                    self.id, candidate, profile.id
+                )));
+            }
+        }
         Ok(candidate)
     }
 
@@ -495,6 +511,71 @@ impl InstalledPluginPackageManifest {
         }
         Ok(candidate)
     }
+
+    fn resolved_provider_profile_id(&self) -> Option<String> {
+        self.provider_profile
+            .as_deref()
+            .map(str::trim)
+            .filter(|candidate| !candidate.is_empty())
+            .map(|candidate| candidate.to_string())
+    }
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct ModelPluginAbiUsage {
+    uses_openai_import: bool,
+    uses_provider_profile_import: bool,
+}
+
+fn resolve_builtin_provider_profile(profile_id: &str) -> KelvinResult<ModelProviderProfile> {
+    ModelProviderProfile::builtin(profile_id).ok_or_else(|| {
+        KelvinError::InvalidInput(format!(
+            "unsupported provider_profile '{}'",
+            profile_id.trim()
+        ))
+    })
+}
+
+fn resolve_model_provider_profile(
+    manifest: &InstalledPluginPackageManifest,
+    abi_usage: ModelPluginAbiUsage,
+) -> KelvinResult<Option<ModelProviderProfile>> {
+    if let Some(profile_id) = manifest.resolved_provider_profile_id() {
+        let profile = resolve_builtin_provider_profile(&profile_id)?;
+        if abi_usage.uses_openai_import && profile.id != OPENAI_RESPONSES_PROFILE_ID {
+            return Err(KelvinError::InvalidInput(format!(
+                "plugin '{}' uses legacy openai import but provider_profile '{}' is not compatible",
+                manifest.id, profile.id
+            )));
+        }
+        return Ok(Some(profile));
+    }
+
+    if abi_usage.uses_provider_profile_import {
+        return Err(KelvinError::InvalidInput(format!(
+            "plugin '{}' uses provider_profile_call but is missing provider_profile",
+            manifest.id
+        )));
+    }
+
+    if abi_usage.uses_openai_import {
+        return Ok(Some(resolve_builtin_provider_profile(
+            OPENAI_RESPONSES_PROFILE_ID,
+        )?));
+    }
+
+    if manifest
+        .provider_name
+        .as_deref()
+        .map(str::trim)
+        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("openai"))
+    {
+        return Ok(Some(resolve_builtin_provider_profile(
+            OPENAI_RESPONSES_PROFILE_ID,
+        )?));
+    }
+
+    Ok(None)
 }
 
 #[derive(Debug, Default)]
@@ -659,6 +740,7 @@ struct InstalledWasmModelProvider {
     plugin_version: String,
     provider_name: String,
     model_name: String,
+    provider_profile: Option<ModelProviderProfile>,
     entrypoint_abs: PathBuf,
     host: Arc<WasmModelHost>,
     scopes: CapabilityScopes,
@@ -673,6 +755,7 @@ impl InstalledWasmModelProvider {
         plugin_version: String,
         provider_name: String,
         model_name: String,
+        provider_profile: Option<ModelProviderProfile>,
         entrypoint_abs: PathBuf,
         host: Arc<WasmModelHost>,
         scopes: CapabilityScopes,
@@ -683,6 +766,7 @@ impl InstalledWasmModelProvider {
             plugin_version,
             provider_name,
             model_name,
+            provider_profile,
             entrypoint_abs,
             host,
             scopes,
@@ -695,6 +779,7 @@ impl InstalledWasmModelProvider {
         ModelSandboxPolicy {
             network_allow_hosts: self.scopes.network_allow_hosts.clone(),
             timeout_ms: self.controls.timeout_ms,
+            provider_profile: self.provider_profile.clone(),
             ..ModelSandboxPolicy::default()
         }
     }
@@ -970,6 +1055,11 @@ pub fn load_installed_plugins(
                 .model_provider
                 .as_ref()
                 .map(|provider| provider.model_name.clone()),
+            provider_profile: plugin
+                .model_provider
+                .as_ref()
+                .and_then(|provider| provider.provider_profile.as_ref())
+                .map(|profile| profile.id.clone()),
             runtime: plugin.runtime.clone(),
             publisher: plugin.publisher.clone(),
         };
@@ -994,6 +1084,7 @@ pub fn load_installed_plugins(
             .then_with(|| left.tool_name.cmp(&right.tool_name))
             .then_with(|| left.provider_name.cmp(&right.provider_name))
             .then_with(|| left.model_name.cmp(&right.model_name))
+            .then_with(|| left.provider_profile.cmp(&right.provider_profile))
     });
 
     let tool_registry = Arc::new(SdkToolRegistry::from_plugin_registry(
@@ -1157,21 +1248,22 @@ fn load_one_plugin(
             )));
         }
 
-        let provider_name = package_manifest.resolved_provider_name()?;
+        let entrypoint_bytes = fs::read(&entrypoint_abs)?;
+        let abi_usage = validate_model_plugin_imports(&entrypoint_bytes, &package_manifest.id)?;
+        let provider_profile = resolve_model_provider_profile(&package_manifest, abi_usage)?;
+        let provider_name = package_manifest.resolved_provider_name(provider_profile.as_ref())?;
         let model_name = package_manifest.resolved_model_name()?;
         model_provider = Some(Arc::new(InstalledWasmModelProvider::new(
             package_manifest.id.clone(),
             package_manifest.version.clone(),
             provider_name,
             model_name,
+            provider_profile,
             entrypoint_abs.clone(),
             model_host,
             scopes.clone(),
             controls.clone(),
         )));
-
-        let entrypoint_bytes = fs::read(&entrypoint_abs)?;
-        validate_model_plugin_imports(&entrypoint_bytes, &package_manifest.id)?;
     }
 
     Ok(LoadedPluginFactoryData {
@@ -1384,7 +1476,11 @@ fn sandbox_from_manifest(manifest: &InstalledPluginPackageManifest) -> KelvinRes
     Ok(policy)
 }
 
-fn validate_model_plugin_imports(wasm_bytes: &[u8], plugin_id: &str) -> KelvinResult<()> {
+fn validate_model_plugin_imports(
+    wasm_bytes: &[u8],
+    plugin_id: &str,
+) -> KelvinResult<ModelPluginAbiUsage> {
+    let mut usage = ModelPluginAbiUsage::default();
     for payload in Parser::new(0).parse_all(wasm_bytes) {
         let payload = payload
             .map_err(|err| KelvinError::InvalidInput(format!("invalid model wasm: {err}")))?;
@@ -1400,9 +1496,13 @@ fn validate_model_plugin_imports(wasm_bytes: &[u8], plugin_id: &str) -> KelvinRe
                     )));
                 }
                 match import.name {
-                    model_abi::IMPORT_OPENAI_RESPONSES_CALL
-                    | model_abi::IMPORT_LOG
-                    | model_abi::IMPORT_CLOCK_NOW_MS => {}
+                    model_abi::IMPORT_OPENAI_RESPONSES_CALL => {
+                        usage.uses_openai_import = true;
+                    }
+                    model_abi::IMPORT_PROVIDER_PROFILE_CALL => {
+                        usage.uses_provider_profile_import = true;
+                    }
+                    model_abi::IMPORT_LOG | model_abi::IMPORT_CLOCK_NOW_MS => {}
                     name => {
                         return Err(KelvinError::InvalidInput(format!(
                             "model plugin '{}' has forbidden import '{}.{}'",
@@ -1413,7 +1513,13 @@ fn validate_model_plugin_imports(wasm_bytes: &[u8], plugin_id: &str) -> KelvinRe
             }
         }
     }
-    Ok(())
+    if usage.uses_openai_import && usage.uses_provider_profile_import {
+        return Err(KelvinError::InvalidInput(format!(
+            "model plugin '{}' mixes legacy and provider-profile imports",
+            plugin_id
+        )));
+    }
+    Ok(usage)
 }
 
 fn sha256_hex(bytes: &[u8]) -> String {
@@ -1557,7 +1663,9 @@ mod tests {
         load_installed_plugins, load_installed_tool_plugins, sha256_hex,
         InstalledPluginLoaderConfig, PublisherTrustPolicy,
     };
-    use kelvin_core::{PluginSecurityPolicy, ToolCallInput, ToolRegistry};
+    use kelvin_core::{
+        PluginSecurityPolicy, ToolCallInput, ToolRegistry, OPENAI_RESPONSES_PROFILE_ID,
+    };
 
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
         let millis = SystemTime::now()
@@ -1646,6 +1754,7 @@ mod tests {
             "experimental": false,
             "runtime": "wasm_model_v1",
             "provider_name": "openai",
+            "provider_profile": OPENAI_RESPONSES_PROFILE_ID,
             "model_name": "gpt-4.1-mini",
             "entrypoint": "model.wasm",
             "entrypoint_sha256": null,
@@ -1878,6 +1987,81 @@ mod tests {
             default_model_manifest("acme.openai", "1.0.0"),
             r#"
             (module
+              (import "kelvin_model_host_v1" "provider_profile_call" (func $provider_profile_call (param i32 i32) (result i64)))
+              (import "kelvin_model_host_v1" "log" (func $log (param i32 i32 i32) (result i32)))
+              (import "kelvin_model_host_v1" "clock_now_ms" (func $clock_now_ms (result i64)))
+              (memory (export "memory") 2)
+              (global $heap (mut i32) (i32.const 1024))
+              (func (export "alloc") (param $len i32) (result i32)
+                (local $ptr i32)
+                global.get $heap
+                local.tee $ptr
+                local.get $len
+                i32.add
+                global.set $heap
+                local.get $ptr)
+              (func (export "dealloc") (param i32 i32))
+              (func (export "infer") (param $ptr i32) (param $len i32) (result i64)
+                local.get $ptr
+                local.get $len
+                call $provider_profile_call)
+            )
+            "#,
+            Some(&signing_key),
+        );
+
+        let trust_policy = PublisherTrustPolicy::default()
+            .with_publisher_key("acme", &public_key)
+            .expect("publisher key");
+        let loaded = load_installed_plugins(InstalledPluginLoaderConfig {
+            plugin_home,
+            core_version: "0.1.0".to_string(),
+            security_policy: PluginSecurityPolicy::default(),
+            trust_policy,
+        })
+        .expect("load installed model plugin");
+
+        assert_eq!(loaded.loaded_plugins.len(), 1);
+        assert_eq!(
+            loaded.loaded_plugins[0].provider_name.as_deref(),
+            Some("openai")
+        );
+        assert_eq!(
+            loaded.loaded_plugins[0].model_name.as_deref(),
+            Some("gpt-4.1-mini")
+        );
+        assert_eq!(
+            loaded.loaded_plugins[0].provider_profile.as_deref(),
+            Some(OPENAI_RESPONSES_PROFILE_ID)
+        );
+        let provider = loaded
+            .model_registry
+            .get_by_plugin_id("acme.openai")
+            .expect("model registry entry");
+        assert_eq!(provider.provider_name(), "openai");
+        assert_eq!(provider.model_name(), "gpt-4.1-mini");
+    }
+
+    #[test]
+    fn legacy_openai_model_plugin_without_provider_profile_still_loads() {
+        let plugin_home = unique_temp_dir("legacy-openai-model");
+        let signing_key = SigningKey::from_bytes(&[13_u8; 32]);
+        let public_key = base64::engine::general_purpose::STANDARD
+            .encode(signing_key.verifying_key().to_bytes());
+
+        let mut manifest = default_model_manifest("acme.legacy-openai", "1.0.0");
+        manifest
+            .as_object_mut()
+            .expect("manifest object")
+            .remove("provider_profile");
+
+        write_installed_plugin(
+            &plugin_home,
+            "acme.legacy-openai",
+            "1.0.0",
+            manifest,
+            r#"
+            (module
               (import "kelvin_model_host_v1" "openai_responses_call" (func $openai_responses_call (param i32 i32) (result i64)))
               (import "kelvin_model_host_v1" "log" (func $log (param i32 i32 i32) (result i32)))
               (import "kelvin_model_host_v1" "clock_now_ms" (func $clock_now_ms (result i64)))
@@ -1910,23 +2094,12 @@ mod tests {
             security_policy: PluginSecurityPolicy::default(),
             trust_policy,
         })
-        .expect("load installed model plugin");
+        .expect("load legacy model plugin");
 
-        assert_eq!(loaded.loaded_plugins.len(), 1);
         assert_eq!(
-            loaded.loaded_plugins[0].provider_name.as_deref(),
-            Some("openai")
+            loaded.loaded_plugins[0].provider_profile.as_deref(),
+            Some(OPENAI_RESPONSES_PROFILE_ID)
         );
-        assert_eq!(
-            loaded.loaded_plugins[0].model_name.as_deref(),
-            Some("gpt-4.1-mini")
-        );
-        let provider = loaded
-            .model_registry
-            .get_by_plugin_id("acme.openai")
-            .expect("model registry entry");
-        assert_eq!(provider.provider_name(), "openai");
-        assert_eq!(provider.model_name(), "gpt-4.1-mini");
     }
 
     #[test]

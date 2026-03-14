@@ -1,4 +1,8 @@
+#![recursion_limit = "256"]
+
 mod channels;
+mod ingress;
+mod scheduler;
 
 use std::collections::{HashMap, VecDeque};
 use std::fs;
@@ -13,10 +17,12 @@ use channels::{
     TelegramIngressRequest, TelegramPairApproveRequest,
 };
 use futures_util::{SinkExt, StreamExt};
+pub use ingress::GatewayIngressConfig;
 use kelvin_core::{now_ms, KelvinError, RunOutcome};
 use kelvin_sdk::{
     KelvinSdkAcceptedRun, KelvinSdkRunRequest, KelvinSdkRuntime, KelvinSdkRuntimeConfig,
 };
+use scheduler::{GatewayScheduler, ScheduleHistoryParams, ScheduleListParams};
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -49,6 +55,8 @@ pub const GATEWAY_METHODS_V1: &[&str] = &[
     "run.state",
     "run.submit",
     "run.wait",
+    "schedule.history",
+    "schedule.list",
 ];
 
 const DEFAULT_MAX_CONNECTIONS: usize = 128;
@@ -100,18 +108,21 @@ pub struct GatewayConfig {
     pub auth_token: Option<String>,
     pub runtime: KelvinSdkRuntimeConfig,
     pub security: GatewaySecurityConfig,
+    pub ingress: GatewayIngressConfig,
 }
 
 #[derive(Clone)]
 struct GatewayState {
     bind_addr: SocketAddr,
     tls_enabled: bool,
+    ingress: Option<ingress::GatewayIngressRuntime>,
     runtime: KelvinSdkRuntime,
     auth_token: Option<String>,
     security: GatewaySecurityConfig,
     started_at: Instant,
     idempotency: Arc<Mutex<IdempotencyCache>>,
     channels: Arc<Mutex<ChannelEngine>>,
+    scheduler: Arc<GatewayScheduler>,
     auth_failures: Arc<Mutex<AuthFailureTracker>>,
     connection_semaphore: Arc<Semaphore>,
 }
@@ -586,7 +597,14 @@ pub async fn run_gateway(config: GatewayConfig) -> Result<(), String> {
     let runtime = KelvinSdkRuntime::initialize(config.runtime)
         .await
         .map_err(|err| err.to_string())?;
-    run_gateway_with_listener_secure(listener, runtime, config.auth_token, config.security).await
+    run_gateway_with_listener_secure_and_ingress(
+        listener,
+        runtime,
+        config.auth_token,
+        config.security,
+        config.ingress,
+    )
+    .await
 }
 
 pub async fn run_gateway_with_listener(
@@ -594,11 +612,12 @@ pub async fn run_gateway_with_listener(
     runtime: KelvinSdkRuntime,
     auth_token: Option<String>,
 ) -> Result<(), String> {
-    run_gateway_with_listener_secure(
+    run_gateway_with_listener_secure_and_ingress(
         listener,
         runtime,
         auth_token,
         GatewaySecurityConfig::default(),
+        GatewayIngressConfig::default(),
     )
     .await
 }
@@ -609,6 +628,23 @@ pub async fn run_gateway_with_listener_secure(
     auth_token: Option<String>,
     security: GatewaySecurityConfig,
 ) -> Result<(), String> {
+    run_gateway_with_listener_secure_and_ingress(
+        listener,
+        runtime,
+        auth_token,
+        security,
+        GatewayIngressConfig::default(),
+    )
+    .await
+}
+
+pub async fn run_gateway_with_listener_secure_and_ingress(
+    listener: TcpListener,
+    runtime: KelvinSdkRuntime,
+    auth_token: Option<String>,
+    security: GatewaySecurityConfig,
+    ingress: GatewayIngressConfig,
+) -> Result<(), String> {
     let local_addr = listener
         .local_addr()
         .map_err(|err| format!("local_addr failed: {err}"))?;
@@ -617,27 +653,42 @@ pub async fn run_gateway_with_listener_secure(
         Some(config) => Some(load_tls_acceptor(config)?),
         None => None,
     };
+    let (ingress_listener, ingress_runtime) = match ingress.bind_listener().await? {
+        Some((listener, runtime)) => (Some(listener), Some(runtime)),
+        None => (None, None),
+    };
 
     println!(
         "kelvin-gateway listening on {}://{local_addr}",
         gateway_scheme(&security)
     );
     let channel_state_dir = runtime.state_dir().map(Path::to_path_buf);
-    let channels = ChannelEngine::from_env_with_state_dir(channel_state_dir.as_deref())
-        .map_err(|err| format!("initialize channel engine: {err}"))?;
+    let channels = ChannelEngine::from_env_with_state_dir(
+        channel_state_dir.as_deref(),
+        ingress.channel_exposure(ingress_runtime.as_ref()),
+    )
+    .map_err(|err| format!("initialize channel engine: {err}"))?;
+    let channels = Arc::new(Mutex::new(channels));
+    let scheduler = Arc::new(GatewayScheduler::new(runtime.scheduler_store()));
+    scheduler.start(runtime.clone(), channels.clone());
 
     let state = GatewayState {
         bind_addr: local_addr,
         tls_enabled: tls_acceptor.is_some(),
+        ingress: ingress_runtime.clone(),
         runtime,
         auth_token: auth_token.map(|value| value.trim().to_string()),
         security: security.clone(),
         started_at: Instant::now(),
         idempotency: Arc::new(Mutex::new(IdempotencyCache::new(2_048))),
-        channels: Arc::new(Mutex::new(channels)),
+        channels,
+        scheduler,
         auth_failures: Arc::new(Mutex::new(AuthFailureTracker::new(512))),
         connection_semaphore: Arc::new(Semaphore::new(security.max_connections)),
     };
+    if let Some(listener) = ingress_listener {
+        ingress::spawn_server(listener, state.clone(), ingress);
+    }
 
     loop {
         let (stream, peer) = listener
@@ -1013,12 +1064,14 @@ async fn handle_request(
                     "max_outbound_messages_per_connection": state.security.max_outbound_messages_per_connection,
                     "max_inflight_requests_per_connection": 1,
                 },
+                "ingress": ingress::GatewayIngressConfig::status_json(state.ingress.as_ref()),
                 "channels": {
                     "routing": channels.routing_status(),
                     "telegram": channels.telegram_status(),
                     "slack": channels.slack_status(),
                     "discord": channels.discord_status(),
                 },
+                "scheduler": state.scheduler.health_payload().await,
             }))
         }
         "agent" | "run.submit" => {
@@ -1111,6 +1164,17 @@ async fn handle_request(
             let params: ChannelRouteInspectRequest = parse_params(params, method)?;
             let channels = state.channels.lock().await;
             channels.route_inspect(params).map_err(map_kelvin_error)
+        }
+        "schedule.list" => {
+            let _params: ScheduleListParams = parse_params(params, method)?;
+            state.scheduler.list_payload().map_err(map_kelvin_error)
+        }
+        "schedule.history" => {
+            let params: ScheduleHistoryParams = parse_params(params, method)?;
+            state
+                .scheduler
+                .history_payload(params)
+                .map_err(map_kelvin_error)
         }
         _ => Err(GatewayErrorPayload {
             code: "method_not_found".to_string(),
@@ -1357,6 +1421,8 @@ mod tests {
                 "run.state",
                 "run.submit",
                 "run.wait",
+                "schedule.history",
+                "schedule.list",
             ]
         );
         let unique = methods.iter().copied().collect::<HashSet<_>>();

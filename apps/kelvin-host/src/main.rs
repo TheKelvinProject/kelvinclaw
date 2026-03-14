@@ -326,6 +326,11 @@ async fn main() {
                         "hint: set OPENAI_API_KEY and install the OpenAI model plugin with scripts/install-kelvin-openai-plugin.sh"
                     );
                 }
+                if err.to_string().contains("ANTHROPIC_API_KEY") {
+                    eprintln!(
+                        "hint: set ANTHROPIC_API_KEY and install the Anthropic model plugin with scripts/install-kelvin-anthropic-plugin.sh"
+                    );
+                }
                 std::process::exit(1);
             }
         }

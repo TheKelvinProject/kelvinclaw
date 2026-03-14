@@ -16,6 +16,8 @@ use kelvin_core::{
     ToolCallResult, ToolRegistry, KELVIN_CORE_API_VERSION,
 };
 
+use crate::{NewScheduledTask, ScheduleReplyTarget, SchedulerStore};
+
 const DEFAULT_READ_MAX_BYTES: usize = 64 * 1024;
 const DEFAULT_FETCH_MAX_BYTES: usize = 128 * 1024;
 const DEFAULT_FETCH_TIMEOUT_MS: u64 = 3_000;
@@ -500,34 +502,7 @@ impl Tool for SafeWebFetchTool {
 #[derive(Clone)]
 struct SchedulerTool {
     policy: ToolPackPolicy,
-}
-
-impl SchedulerTool {
-    fn file_path(workspace: &str) -> std::path::PathBuf {
-        Path::new(workspace).join(".kelvin/scheduler/tasks.json")
-    }
-
-    fn validate_cron(raw: &str) -> KelvinResult<String> {
-        let value = raw.trim();
-        let parts = value.split_whitespace().collect::<Vec<_>>();
-        if parts.len() != 5 {
-            return Err(KelvinError::InvalidInput(
-                "cron must have exactly 5 fields".to_string(),
-            ));
-        }
-        if parts.iter().any(|part| {
-            part.is_empty()
-                || part.chars().count() > 32
-                || !part
-                    .chars()
-                    .all(|ch| ch.is_ascii_digit() || matches!(ch, '*' | ',' | '-' | '/'))
-        }) {
-            return Err(KelvinError::InvalidInput(
-                "cron contains unsupported characters".to_string(),
-            ));
-        }
-        Ok(value.to_string())
-    }
+    store: Arc<SchedulerStore>,
 }
 
 #[async_trait]
@@ -541,20 +516,6 @@ impl Tool for SchedulerTool {
         let action = optional_string(args, "action", self.name())?
             .unwrap_or_else(|| "list".to_string())
             .to_ascii_lowercase();
-        let file_path = Self::file_path(&input.workspace_dir);
-        if let Some(parent) = file_path.parent() {
-            fs::create_dir_all(parent)?;
-        }
-
-        let mut tasks = if file_path.is_file() {
-            let bytes = fs::read(&file_path)?;
-            serde_json::from_slice::<Vec<Value>>(&bytes).map_err(|err| {
-                KelvinError::InvalidInput(format!("{} invalid scheduler state: {err}", self.name()))
-            })?
-        } else {
-            Vec::new()
-        };
-
         match action.as_str() {
             "list" => {}
             "add" => {
@@ -566,17 +527,31 @@ impl Tool for SchedulerTool {
                     )));
                 }
                 let approval_reason = require_sensitive_approval(args, "schedule_mutation")?;
-                let cron = Self::validate_cron(&required_string(args, "cron", self.name())?)?;
-                let task = required_string(args, "task", self.name())?;
+                let prompt = optional_string(args, "prompt", self.name())?
+                    .or(optional_string(args, "task", self.name())?)
+                    .ok_or_else(|| {
+                        KelvinError::InvalidInput(
+                            "schedule_cron add requires 'task' or 'prompt'".to_string(),
+                        )
+                    })?;
+                let reply_target = parse_reply_target(args, self.name())?;
                 let id = optional_string(args, "id", self.name())?
                     .unwrap_or_else(|| format!("task-{}", now_ms()));
-                tasks.push(json!({
-                    "id": id,
-                    "cron": cron,
-                    "task": task,
-                    "created_by_session": input.session_id,
-                    "approval_reason": approval_reason,
-                }));
+                self.store.add_schedule(NewScheduledTask {
+                    id,
+                    cron: required_string(args, "cron", self.name())?,
+                    prompt,
+                    session_id: optional_string(args, "session_id", self.name())?,
+                    workspace_dir: optional_string(args, "workspace_dir", self.name())?
+                        .or_else(|| Some(input.workspace_dir.clone())),
+                    timeout_ms: optional_u64(args, "timeout_ms", self.name())?,
+                    system_prompt: optional_string(args, "system_prompt", self.name())?,
+                    memory_query: optional_string(args, "memory_query", self.name())?,
+                    reply_target,
+                    created_by_session: input.session_id.clone(),
+                    created_at_ms: now_ms(),
+                    approval_reason,
+                })?;
             }
             "remove" => {
                 if !self.policy.allow_scheduler_write {
@@ -586,9 +561,11 @@ impl Tool for SchedulerTool {
                         ENV_TOOLPACK_ENABLE_SCHEDULER_WRITE
                     )));
                 }
-                let _approval_reason = require_sensitive_approval(args, "schedule_mutation")?;
+                let approval_reason = require_sensitive_approval(args, "schedule_mutation")?;
                 let id = required_string(args, "id", self.name())?;
-                tasks.retain(|item| item.get("id").and_then(Value::as_str) != Some(id.as_str()));
+                let _ = self
+                    .store
+                    .remove_schedule(&id, &input.session_id, &approval_reason)?;
             }
             _ => {
                 return Err(KelvinError::InvalidInput(format!(
@@ -598,22 +575,35 @@ impl Tool for SchedulerTool {
             }
         }
 
-        tasks.sort_by(|left, right| {
-            let left_id = left.get("id").and_then(Value::as_str).unwrap_or_default();
-            let right_id = right.get("id").and_then(Value::as_str).unwrap_or_default();
-            left_id.cmp(right_id)
-        });
-        fs::write(
-            &file_path,
-            serde_json::to_vec_pretty(&tasks).unwrap_or_default(),
-        )?;
+        let schedules = self.store.list_schedules()?;
+        let tasks = schedules
+            .iter()
+            .map(|schedule| {
+                json!({
+                    "id": schedule.id,
+                    "cron": schedule.cron,
+                    "task": schedule.prompt,
+                    "prompt": schedule.prompt,
+                    "session_id": schedule.session_id,
+                    "workspace_dir": schedule.workspace_dir,
+                    "timeout_ms": schedule.timeout_ms,
+                    "system_prompt": schedule.system_prompt,
+                    "memory_query": schedule.memory_query,
+                    "reply_target": schedule.reply_target,
+                    "created_by_session": schedule.created_by_session,
+                    "created_at_ms": schedule.created_at_ms,
+                    "approval_reason": schedule.approval_reason,
+                    "next_slot_at_ms": schedule.next_slot_at_ms,
+                })
+            })
+            .collect::<Vec<_>>();
 
         let summary = format!("{} action='{}' tasks={}", self.name(), action, tasks.len());
         let output = json!({
             "action": action,
             "count": tasks.len(),
             "tasks": tasks,
-            "state_path": file_path.to_string_lossy(),
+            "state_path": self.store.state_path().to_string_lossy(),
         });
         Ok(ToolCallResult {
             summary: summary.clone(),
@@ -622,6 +612,20 @@ impl Tool for SchedulerTool {
             is_error: false,
         })
     }
+}
+
+fn parse_reply_target(
+    args: &serde_json::Map<String, Value>,
+    tool_name: &str,
+) -> KelvinResult<Option<ScheduleReplyTarget>> {
+    let Some(value) = args.get("reply_target") else {
+        return Ok(None);
+    };
+    serde_json::from_value::<ScheduleReplyTarget>(value.clone())
+        .map(Some)
+        .map_err(|err| {
+            KelvinError::InvalidInput(format!("{tool_name} invalid reply_target payload: {err}"))
+        })
 }
 
 #[derive(Clone)]
@@ -760,6 +764,7 @@ fn manifest(
 
 pub fn load_default_toolpack_plugins(
     core_version: &str,
+    scheduler_store: Arc<SchedulerStore>,
 ) -> KelvinResult<(Arc<dyn ToolRegistry>, usize)> {
     let policy = ToolPackPolicy::from_env();
     let registry = InMemoryPluginRegistry::new();
@@ -810,10 +815,11 @@ pub fn load_default_toolpack_plugins(
                 "kelvin.tool.scheduler",
                 "Kelvin Scheduler Tool",
                 vec![PluginCapability::ToolProvider, PluginCapability::FsWrite],
-                "Local scheduler registry tool with explicit mutation approval.",
+                "Durable scheduler registry tool with explicit mutation approval.",
             ),
             tool: Arc::new(SchedulerTool {
                 policy: policy.clone(),
+                store: scheduler_store,
             }),
         },
         SingleToolPlugin {
@@ -842,11 +848,32 @@ pub fn load_default_toolpack_plugins(
 
 #[cfg(test)]
 mod tests {
+    use std::sync::Arc;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    use crate::SchedulerStore;
+
     use super::load_default_toolpack_plugins;
+
+    fn unique_workspace() -> std::path::PathBuf {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|value| value.as_millis())
+            .unwrap_or_default();
+        let path = std::env::temp_dir().join(format!("kelvin-toolpack-{millis}"));
+        std::fs::create_dir_all(&path).expect("create temp workspace");
+        path
+    }
 
     #[test]
     fn default_toolpack_projects_expected_tools() {
-        let (registry, count) = load_default_toolpack_plugins("0.1.0").expect("toolpack");
+        let workspace = unique_workspace();
+        let scheduler = Arc::new(
+            SchedulerStore::new(Some(workspace.join(".kelvin/state")), &workspace)
+                .expect("scheduler store"),
+        );
+        let (registry, count) =
+            load_default_toolpack_plugins("0.1.0", scheduler).expect("toolpack");
         assert_eq!(count, 5);
         assert_eq!(
             registry.names(),

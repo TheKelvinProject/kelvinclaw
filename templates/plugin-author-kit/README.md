@@ -16,6 +16,8 @@ Template manifests:
 - `wasm_tool/plugin.json.template`
 - `wasm_model/plugin.json.template`
 
+New model plugins should declare a `provider_profile` such as `openai.responses` or `anthropic.messages` so the host can enforce provider routing and auth policy.
+
 Signing and trust policy:
 
 ```bash

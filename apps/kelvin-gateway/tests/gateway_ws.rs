@@ -9,6 +9,7 @@ use kelvin_gateway::{
 };
 use kelvin_sdk::{
     KelvinCliMemoryMode, KelvinSdkModelSelection, KelvinSdkRuntime, KelvinSdkRuntimeConfig,
+    NewScheduledTask, ScheduleReplyTarget,
 };
 use serde_json::{json, Value};
 use tokio::net::TcpListener;
@@ -63,10 +64,6 @@ async fn start_gateway_with_security(
     auth_token: Option<&str>,
     security: GatewaySecurityConfig,
 ) -> (String, JoinHandle<()>) {
-    let listener = TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("bind test listener");
-    let addr = listener.local_addr().expect("listener address");
     let runtime = KelvinSdkRuntime::initialize(KelvinSdkRuntimeConfig {
         workspace_dir: unique_workspace("runtime"),
         default_session_id: "main".to_string(),
@@ -86,6 +83,18 @@ async fn start_gateway_with_security(
     })
     .await
     .expect("initialize runtime");
+    start_gateway_with_runtime(runtime, auth_token, security).await
+}
+
+async fn start_gateway_with_runtime(
+    runtime: KelvinSdkRuntime,
+    auth_token: Option<&str>,
+    security: GatewaySecurityConfig,
+) -> (String, JoinHandle<()>) {
+    let listener = TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("bind test listener");
+    let addr = listener.local_addr().expect("listener address");
 
     let token = auth_token.map(|value| value.to_string());
     let handle = tokio::spawn(async move {
@@ -299,6 +308,132 @@ async fn gateway_agent_submit_wait_and_idempotency_flow_works() {
     let wait_response = read_until_response(&mut socket, "wait-1").await;
     assert_eq!(wait_response["ok"], json!(true));
     assert_eq!(wait_response["payload"]["status"], json!("ok"));
+
+    server_handle.abort();
+}
+
+#[tokio::test]
+async fn gateway_exposes_scheduler_list_and_history() {
+    let _guard = ENV_LOCK.lock().await;
+    let _env_restore = [
+        EnvVarRestore::set("KELVIN_SLACK_ENABLED", Some("true")),
+        EnvVarRestore::set("KELVIN_SLACK_BOT_TOKEN", None),
+    ];
+
+    let workspace = unique_workspace("scheduler-runtime");
+    let runtime = KelvinSdkRuntime::initialize(KelvinSdkRuntimeConfig {
+        workspace_dir: workspace.clone(),
+        default_session_id: "main".to_string(),
+        memory_mode: KelvinCliMemoryMode::Fallback,
+        default_timeout_ms: 3_000,
+        default_system_prompt: None,
+        core_version: "0.1.0".to_string(),
+        plugin_security_policy: Default::default(),
+        load_installed_plugins: false,
+        model_provider: KelvinSdkModelSelection::Echo,
+        require_cli_plugin_tool: false,
+        emit_stdout_events: false,
+        state_dir: Some(workspace.join(".kelvin/state")),
+        persist_runs: true,
+        max_session_history_messages: 128,
+        compact_to_messages: 64,
+    })
+    .await
+    .expect("initialize runtime");
+    runtime
+        .scheduler_store()
+        .add_schedule(NewScheduledTask {
+            id: "schedule-api".to_string(),
+            cron: "* * * * *".to_string(),
+            prompt: "hello from schedule".to_string(),
+            session_id: Some("schedule-session".to_string()),
+            workspace_dir: Some(workspace.to_string_lossy().to_string()),
+            timeout_ms: Some(2_000),
+            system_prompt: None,
+            memory_query: None,
+            reply_target: Some(ScheduleReplyTarget {
+                channel: "slack".to_string(),
+                account_id: "C-SCHEDULE".to_string(),
+            }),
+            created_by_session: "seed-session".to_string(),
+            created_at_ms: 0,
+            approval_reason: "test schedule".to_string(),
+        })
+        .expect("seed schedule");
+
+    let (url, server_handle) =
+        start_gateway_with_runtime(runtime, Some("secret"), GatewaySecurityConfig::default()).await;
+    let (mut socket, _) = connect_async(url).await.expect("connect");
+
+    send_request(
+        &mut socket,
+        "connect-scheduler",
+        "connect",
+        json!({
+            "auth": {"token": "secret"},
+            "client_id": "scheduler-test",
+        }),
+    )
+    .await;
+    assert_eq!(
+        read_until_response(&mut socket, "connect-scheduler").await["ok"],
+        json!(true)
+    );
+
+    send_request(&mut socket, "schedule-list", "schedule.list", json!({})).await;
+    let list = read_until_response(&mut socket, "schedule-list").await;
+    assert_eq!(list["ok"], json!(true));
+    assert_eq!(list["payload"]["status"]["schedule_count"], json!(1));
+    assert_eq!(list["payload"]["schedules"][0]["id"], json!("schedule-api"));
+
+    let mut history = json!({});
+    for _ in 0..12 {
+        send_request(
+            &mut socket,
+            "schedule-history",
+            "schedule.history",
+            json!({
+                "schedule_id": "schedule-api",
+                "limit": 10,
+            }),
+        )
+        .await;
+        history = read_until_response(&mut socket, "schedule-history").await;
+        let completed = history["payload"]["slots"]
+            .as_array()
+            .map(|slots| slots.iter().any(|slot| slot["phase"] == json!("completed")))
+            .unwrap_or(false);
+        if completed {
+            break;
+        }
+        sleep(Duration::from_millis(250)).await;
+    }
+
+    assert_eq!(history["ok"], json!(true));
+    assert!(history["payload"]["slots"]
+        .as_array()
+        .map(|slots| slots.iter().any(|slot| slot["phase"] == json!("completed")))
+        .unwrap_or(false));
+    assert!(history["payload"]["audit"]
+        .as_array()
+        .map(|entries| entries
+            .iter()
+            .any(|entry| entry["kind"] == json!("slot_completed")))
+        .unwrap_or(false));
+
+    send_request(&mut socket, "health-scheduler", "health", json!({})).await;
+    let health = read_until_response(&mut socket, "health-scheduler").await;
+    assert_eq!(health["ok"], json!(true));
+    assert_eq!(
+        health["payload"]["scheduler"]["status"]["schedule_count"],
+        json!(1)
+    );
+    assert!(
+        health["payload"]["scheduler"]["metrics"]["claimed_total"]
+            .as_u64()
+            .unwrap_or_default()
+            >= 1
+    );
 
     server_handle.abort();
 }

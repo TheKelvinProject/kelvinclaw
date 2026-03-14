@@ -4,7 +4,7 @@ use std::path::{Path, PathBuf};
 use std::sync::Arc;
 
 use kelvin_core::{now_ms, KelvinError, RunOutcome};
-use kelvin_sdk::{KelvinSdkRunRequest, KelvinSdkRuntime};
+use kelvin_sdk::{KelvinSdkRunRequest, KelvinSdkRuntime, ScheduleReplyTarget};
 use kelvin_wasm::{ChannelSandboxPolicy, WasmChannelHost};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -20,11 +20,19 @@ pub struct ChannelEngine {
 }
 
 impl ChannelEngine {
-    pub fn from_env_with_state_dir(state_dir: Option<&Path>) -> KelvinErrorOr<Self> {
+    pub fn from_env_with_state_dir(
+        state_dir: Option<&Path>,
+        ingress_exposure: ChannelIngressExposure,
+    ) -> KelvinErrorOr<Self> {
+        let ChannelIngressExposure {
+            telegram: telegram_ingress,
+            slack: slack_ingress,
+            discord: discord_ingress,
+        } = ingress_exposure;
         let routing = ChannelRoutingTable::from_env()?;
-        let telegram = TextChannelAdapter::telegram_from_env(state_dir)?;
-        let slack = TextChannelAdapter::slack_from_env(state_dir)?;
-        let discord = TextChannelAdapter::discord_from_env(state_dir)?;
+        let telegram = TextChannelAdapter::telegram_from_env(state_dir, telegram_ingress)?;
+        let slack = TextChannelAdapter::slack_from_env(state_dir, slack_ingress)?;
+        let discord = TextChannelAdapter::discord_from_env(state_dir, discord_ingress)?;
         Ok(Self {
             routing,
             telegram,
@@ -170,23 +178,113 @@ impl ChannelEngine {
         }))
     }
 
+    pub async fn deliver_scheduled_reply(
+        &mut self,
+        target: &ScheduleReplyTarget,
+        text: &str,
+    ) -> KelvinErrorOr<()> {
+        match target.channel.as_str() {
+            "telegram" => {
+                let adapter = self.telegram.as_mut().ok_or_else(|| {
+                    KelvinError::NotFound("telegram channel is not enabled".to_string())
+                })?;
+                adapter
+                    .deliver_outbound_message(&target.account_id, text)
+                    .await
+            }
+            "slack" => {
+                let adapter = self.slack.as_mut().ok_or_else(|| {
+                    KelvinError::NotFound("slack channel is not enabled".to_string())
+                })?;
+                adapter
+                    .deliver_outbound_message(&target.account_id, text)
+                    .await
+            }
+            "discord" => {
+                let adapter = self.discord.as_mut().ok_or_else(|| {
+                    KelvinError::NotFound("discord channel is not enabled".to_string())
+                })?;
+                adapter
+                    .deliver_outbound_message(&target.account_id, text)
+                    .await
+            }
+            other => Err(KelvinError::InvalidInput(format!(
+                "unsupported scheduled reply target channel '{}'",
+                other
+            ))),
+        }
+    }
+
     pub fn routing_status(&self) -> Value {
         self.routing.status()
+    }
+
+    pub fn is_enabled(&self, kind: ChannelKind) -> bool {
+        match kind {
+            ChannelKind::Telegram => self.telegram.is_some(),
+            ChannelKind::Slack => self.slack.is_some(),
+            ChannelKind::Discord => self.discord.is_some(),
+        }
+    }
+
+    pub fn record_webhook_verified(
+        &mut self,
+        kind: ChannelKind,
+        status_code: u16,
+        retry_hint: bool,
+    ) -> KelvinErrorOr<()> {
+        self.adapter_mut(kind)?
+            .record_webhook_verified(status_code, retry_hint)
+    }
+
+    pub fn record_webhook_denied(
+        &mut self,
+        kind: ChannelKind,
+        status_code: u16,
+        retry_hint: bool,
+        reason: &str,
+    ) -> KelvinErrorOr<()> {
+        self.adapter_mut(kind)?
+            .record_webhook_denied(status_code, retry_hint, reason)
+    }
+
+    fn adapter_mut(&mut self, kind: ChannelKind) -> KelvinErrorOr<&mut TextChannelAdapter> {
+        match kind {
+            ChannelKind::Telegram => self.telegram.as_mut(),
+            ChannelKind::Slack => self.slack.as_mut(),
+            ChannelKind::Discord => self.discord.as_mut(),
+        }
+        .ok_or_else(|| KelvinError::NotFound(format!("{} channel is not enabled", kind.as_str())))
     }
 }
 
 type KelvinErrorOr<T> = Result<T, KelvinError>;
 
+#[derive(Debug, Clone, Default)]
+pub struct ChannelIngressExposure {
+    pub telegram: ChannelDirectIngressStatusConfig,
+    pub slack: ChannelDirectIngressStatusConfig,
+    pub discord: ChannelDirectIngressStatusConfig,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ChannelDirectIngressStatusConfig {
+    pub listener_enabled: bool,
+    pub webhook_path: Option<String>,
+    pub verification_method: Option<String>,
+    pub verification_configured: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
-enum ChannelKind {
+pub(crate) enum ChannelKind {
     Telegram,
     Slack,
     Discord,
 }
 
 impl ChannelKind {
-    fn as_str(self) -> &'static str {
+    pub(crate) fn as_str(self) -> &'static str {
         match self {
             Self::Telegram => "telegram",
             Self::Slack => "slack",
@@ -233,13 +331,17 @@ struct TextChannelConfig {
     kind: ChannelKind,
     enabled: bool,
     pairing_enabled: bool,
+    direct_ingress: ChannelDirectIngressStatusConfig,
     policy: ChannelPolicy,
     transport: ChannelTransportConfig,
     wasm_policy_plugin: Option<WasmChannelPolicyPlugin>,
 }
 
 impl TextChannelConfig {
-    fn from_env(kind: ChannelKind) -> KelvinErrorOr<Self> {
+    fn from_env(
+        kind: ChannelKind,
+        direct_ingress: ChannelDirectIngressStatusConfig,
+    ) -> KelvinErrorOr<Self> {
         let prefix = kind.env_prefix();
         let enabled = read_env_bool(&format!("{prefix}_ENABLED"), false)?;
 
@@ -343,6 +445,7 @@ impl TextChannelConfig {
             kind,
             enabled,
             pairing_enabled,
+            direct_ingress,
             policy: ChannelPolicy {
                 ingress_token: std::env::var(format!("{prefix}_INGRESS_TOKEN"))
                     .ok()
@@ -665,6 +768,12 @@ struct TextChannelAdapter {
 #[serde(default)]
 struct ChannelMetrics {
     ingest_total: u64,
+    webhook_total: u64,
+    webhook_accepted_total: u64,
+    webhook_denied_total: u64,
+    webhook_retry_total: u64,
+    verification_ok_total: u64,
+    verification_failed_total: u64,
     deduped_total: u64,
     queued_total: u64,
     queue_rejected_total: u64,
@@ -680,23 +789,41 @@ struct ChannelMetrics {
     outbound_failure_total: u64,
     last_error: Option<String>,
     last_delivery_at_ms: Option<u128>,
+    last_webhook_request_at_ms: Option<u128>,
+    last_webhook_accept_at_ms: Option<u128>,
+    last_webhook_status_code: Option<u16>,
+    last_verification_ok_at_ms: Option<u128>,
+    last_verification_failed_at_ms: Option<u128>,
+    last_verification_error: Option<String>,
 }
 
 impl TextChannelAdapter {
-    fn telegram_from_env(state_dir: Option<&Path>) -> KelvinErrorOr<Option<Self>> {
+    fn telegram_from_env(
+        state_dir: Option<&Path>,
+        direct_ingress: ChannelDirectIngressStatusConfig,
+    ) -> KelvinErrorOr<Option<Self>> {
         Self::new(
-            TextChannelConfig::from_env(ChannelKind::Telegram)?,
+            TextChannelConfig::from_env(ChannelKind::Telegram, direct_ingress)?,
             state_dir,
         )
     }
 
-    fn slack_from_env(state_dir: Option<&Path>) -> KelvinErrorOr<Option<Self>> {
-        Self::new(TextChannelConfig::from_env(ChannelKind::Slack)?, state_dir)
+    fn slack_from_env(
+        state_dir: Option<&Path>,
+        direct_ingress: ChannelDirectIngressStatusConfig,
+    ) -> KelvinErrorOr<Option<Self>> {
+        Self::new(
+            TextChannelConfig::from_env(ChannelKind::Slack, direct_ingress)?,
+            state_dir,
+        )
     }
 
-    fn discord_from_env(state_dir: Option<&Path>) -> KelvinErrorOr<Option<Self>> {
+    fn discord_from_env(
+        state_dir: Option<&Path>,
+        direct_ingress: ChannelDirectIngressStatusConfig,
+    ) -> KelvinErrorOr<Option<Self>> {
         Self::new(
-            TextChannelConfig::from_env(ChannelKind::Discord)?,
+            TextChannelConfig::from_env(ChannelKind::Discord, direct_ingress)?,
             state_dir,
         )
     }
@@ -818,6 +945,20 @@ impl TextChannelAdapter {
             "queue_depth": self.inbox.len(),
             "queue_max_depth": self.config.policy.max_queue_depth,
             "ingress_auth_required": self.config.policy.ingress_token.is_some(),
+            "ingress_verification": {
+                "listener_enabled": self.config.direct_ingress.listener_enabled,
+                "webhook_path": self.config.direct_ingress.webhook_path.clone(),
+                "method": self.config.direct_ingress.verification_method.clone(),
+                "configured": self.config.direct_ingress.verification_configured,
+                "last_verified_at_ms": self.metrics.last_verification_ok_at_ms,
+                "last_failed_at_ms": self.metrics.last_verification_failed_at_ms,
+                "last_error": self.metrics.last_verification_error.clone(),
+            },
+            "ingress_connectivity": {
+                "last_request_at_ms": self.metrics.last_webhook_request_at_ms,
+                "last_accepted_at_ms": self.metrics.last_webhook_accept_at_ms,
+                "last_status_code": self.metrics.last_webhook_status_code,
+            },
             "outbound_delivery_enabled": self.config.transport.bot_token.is_some(),
             "outbound_retry_policy": {
                 "max_retries": self.config.transport.outbound_max_retries,
@@ -826,6 +967,12 @@ impl TextChannelAdapter {
             "wasm_policy_enabled": self.config.wasm_policy_plugin.is_some(),
             "metrics": {
                 "ingest_total": self.metrics.ingest_total,
+                "webhook_total": self.metrics.webhook_total,
+                "webhook_accepted_total": self.metrics.webhook_accepted_total,
+                "webhook_denied_total": self.metrics.webhook_denied_total,
+                "webhook_retry_total": self.metrics.webhook_retry_total,
+                "verification_ok_total": self.metrics.verification_ok_total,
+                "verification_failed_total": self.metrics.verification_failed_total,
                 "deduped_total": self.metrics.deduped_total,
                 "queued_total": self.metrics.queued_total,
                 "queue_rejected_total": self.metrics.queue_rejected_total,
@@ -843,6 +990,43 @@ impl TextChannelAdapter {
                 "last_delivery_at_ms": self.metrics.last_delivery_at_ms,
             }
         })
+    }
+
+    fn record_webhook_verified(&mut self, status_code: u16, retry_hint: bool) -> KelvinErrorOr<()> {
+        let now = now_ms();
+        self.metrics.webhook_total = self.metrics.webhook_total.saturating_add(1);
+        self.metrics.webhook_accepted_total = self.metrics.webhook_accepted_total.saturating_add(1);
+        self.metrics.verification_ok_total = self.metrics.verification_ok_total.saturating_add(1);
+        if retry_hint {
+            self.metrics.webhook_retry_total = self.metrics.webhook_retry_total.saturating_add(1);
+        }
+        self.metrics.last_webhook_request_at_ms = Some(now);
+        self.metrics.last_webhook_accept_at_ms = Some(now);
+        self.metrics.last_webhook_status_code = Some(status_code);
+        self.metrics.last_verification_ok_at_ms = Some(now);
+        self.metrics.last_verification_error = None;
+        self.persist_state()
+    }
+
+    fn record_webhook_denied(
+        &mut self,
+        status_code: u16,
+        retry_hint: bool,
+        reason: &str,
+    ) -> KelvinErrorOr<()> {
+        let now = now_ms();
+        self.metrics.webhook_total = self.metrics.webhook_total.saturating_add(1);
+        self.metrics.webhook_denied_total = self.metrics.webhook_denied_total.saturating_add(1);
+        self.metrics.verification_failed_total =
+            self.metrics.verification_failed_total.saturating_add(1);
+        if retry_hint {
+            self.metrics.webhook_retry_total = self.metrics.webhook_retry_total.saturating_add(1);
+        }
+        self.metrics.last_webhook_request_at_ms = Some(now);
+        self.metrics.last_webhook_status_code = Some(status_code);
+        self.metrics.last_verification_failed_at_ms = Some(now);
+        self.metrics.last_verification_error = Some(reason.to_string());
+        self.persist_state()
     }
 
     fn approve_pairing(&mut self, code: &str) -> KelvinErrorOr<Value> {
@@ -1325,6 +1509,16 @@ impl TextChannelAdapter {
             self.config.kind.as_str(),
             last_error.unwrap_or_else(|| "unknown error".to_string())
         )))
+    }
+
+    async fn deliver_outbound_message(
+        &mut self,
+        account_id: &str,
+        text: &str,
+    ) -> KelvinErrorOr<()> {
+        self.send_message_with_retry(account_id, text).await?;
+        self.persist_state()?;
+        Ok(())
     }
 
     async fn send_outbound_once(
@@ -1880,6 +2074,12 @@ mod tests {
             kind: ChannelKind::Slack,
             enabled: true,
             pairing_enabled: false,
+            direct_ingress: ChannelDirectIngressStatusConfig {
+                listener_enabled: true,
+                webhook_path: Some("/ingress/slack".to_string()),
+                verification_method: Some("slack_signing_secret".to_string()),
+                verification_configured: true,
+            },
             policy: ChannelPolicy {
                 ingress_token: Some("token".to_string()),
                 allow_accounts: HashSet::new(),
@@ -1923,8 +2123,13 @@ mod tests {
         assert_eq!(status["queue_depth"], json!(0));
         assert_eq!(status["state_persistence_enabled"], json!(false));
         assert_eq!(status["ingress_auth_required"], json!(true));
+        assert_eq!(
+            status["ingress_verification"]["method"],
+            json!("slack_signing_secret")
+        );
         assert!(status["metrics"]["policy_denied_total"].is_number());
         assert!(status["metrics"]["rate_limited_total"].is_number());
+        assert!(status["metrics"]["webhook_denied_total"].is_number());
     }
 
     #[test]
@@ -1961,7 +2166,8 @@ mod tests {
         std::env::set_var("KELVIN_TELEGRAM_ENABLED", "true");
         std::env::set_var("KELVIN_TELEGRAM_ALLOW_CHAT_IDS", "1,2");
         std::env::remove_var("KELVIN_TELEGRAM_ALLOW_ACCOUNT_IDS");
-        let config = TextChannelConfig::from_env(ChannelKind::Telegram).expect("config");
+        let config =
+            TextChannelConfig::from_env(ChannelKind::Telegram, Default::default()).expect("config");
         assert!(config.policy.allow_accounts.contains("1"));
         assert!(config.policy.allow_accounts.contains("2"));
         std::env::remove_var("KELVIN_TELEGRAM_ENABLED");

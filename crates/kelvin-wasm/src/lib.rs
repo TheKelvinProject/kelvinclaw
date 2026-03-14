@@ -6,8 +6,8 @@ use wasmtime::{Caller, Config, Engine, Linker, Module, Store};
 
 pub mod model_host;
 pub use model_host::{
-    model_abi, EnvOpenAiResponsesTransport, ModelSandboxPolicy, OpenAiResponsesTransport,
-    WasmModelHost,
+    model_abi, EnvOpenAiResponsesTransport, EnvProviderProfileTransport, ModelSandboxPolicy,
+    OpenAiResponsesTransport, WasmModelHost,
 };
 
 pub mod channel_host;

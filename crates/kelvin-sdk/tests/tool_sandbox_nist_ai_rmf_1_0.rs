@@ -100,12 +100,11 @@ async fn measure_scheduler_state_is_deterministic() {
     )
     .await;
 
-    let tasks_bytes = std::fs::read(workspace.join(".kelvin/scheduler/tasks.json")).expect("tasks");
-    let tasks: Vec<serde_json::Value> = serde_json::from_slice(&tasks_bytes).expect("parse tasks");
-    let ids = tasks
-        .iter()
-        .map(|item| item["id"].as_str().unwrap_or_default().to_string())
-        .collect::<Vec<_>>();
+    let tasks = runtime
+        .scheduler_store()
+        .list_schedules()
+        .expect("list schedules");
+    let ids = tasks.iter().map(|item| item.id.clone()).collect::<Vec<_>>();
     assert_eq!(ids, vec!["a".to_string(), "b".to_string()]);
 }
 
