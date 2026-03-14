@@ -2,6 +2,7 @@
 
 mod channels;
 mod ingress;
+mod operator;
 mod scheduler;
 
 use std::collections::{HashMap, VecDeque};
@@ -21,6 +22,10 @@ pub use ingress::GatewayIngressConfig;
 use kelvin_core::{now_ms, KelvinError, RunOutcome};
 use kelvin_sdk::{
     KelvinSdkAcceptedRun, KelvinSdkRunRequest, KelvinSdkRuntime, KelvinSdkRuntimeConfig,
+};
+use operator::{
+    OperatorPluginsInspectParams, OperatorRunsListParams, OperatorSessionGetParams,
+    OperatorSessionsListParams,
 };
 use scheduler::{GatewayScheduler, ScheduleHistoryParams, ScheduleListParams};
 use serde::de::DeserializeOwned;
@@ -51,6 +56,10 @@ pub const GATEWAY_METHODS_V1: &[&str] = &[
     "channel.telegram.status",
     "connect",
     "health",
+    "operator.plugins.inspect",
+    "operator.runs.list",
+    "operator.session.get",
+    "operator.sessions.list",
     "run.outcome",
     "run.state",
     "run.submit",
@@ -920,7 +929,16 @@ where
         id: first_id,
         method: first_method,
         params: first_params,
-    } = parse_client_frame(&first_message)?;
+    } = match parse_client_frame(&first_message) {
+        Ok(frame) => frame,
+        Err(err) => {
+            let _ = send_error(&writer_tx, "", "invalid_request", &err);
+            let _ = writer_tx.try_send(Message::Close(None));
+            drop(writer_tx);
+            let _ = writer_task.await;
+            return Ok(());
+        }
+    };
 
     if first_method != "connect" {
         let _ = send_error(
@@ -992,7 +1010,14 @@ where
     while let Some(message) = source.next().await {
         match message {
             Ok(Message::Text(text)) => {
-                let frame = parse_client_frame(&text)?;
+                let frame = match parse_client_frame(&text) {
+                    Ok(frame) => frame,
+                    Err(err) => {
+                        let _ = send_error(&writer_tx, "", "invalid_request", &err);
+                        let _ = writer_tx.try_send(Message::Close(None));
+                        break;
+                    }
+                };
                 let ClientFrame::Req { id, method, params } = frame;
                 if method == "connect" {
                     send_error(
@@ -1071,6 +1096,7 @@ async fn handle_request(
                     "slack": channels.slack_status(),
                     "discord": channels.discord_status(),
                 },
+                "plugins": operator::plugins_summary_payload(&state.runtime),
                 "scheduler": state.scheduler.health_payload().await,
             }))
         }
@@ -1175,6 +1201,22 @@ async fn handle_request(
                 .scheduler
                 .history_payload(params)
                 .map_err(map_kelvin_error)
+        }
+        "operator.runs.list" => {
+            let params: OperatorRunsListParams = parse_params(params, method)?;
+            operator::runs_list_payload(&state.runtime, params).map_err(map_kelvin_error)
+        }
+        "operator.sessions.list" => {
+            let params: OperatorSessionsListParams = parse_params(params, method)?;
+            operator::sessions_list_payload(&state.runtime, params).map_err(map_kelvin_error)
+        }
+        "operator.session.get" => {
+            let params: OperatorSessionGetParams = parse_params(params, method)?;
+            operator::session_get_payload(&state.runtime, params).map_err(map_kelvin_error)
+        }
+        "operator.plugins.inspect" => {
+            let params: OperatorPluginsInspectParams = parse_params(params, method)?;
+            operator::plugins_inspect_payload(&state.runtime, params).map_err(map_kelvin_error)
         }
         _ => Err(GatewayErrorPayload {
             code: "method_not_found".to_string(),
@@ -1417,6 +1459,10 @@ mod tests {
                 "channel.telegram.status",
                 "connect",
                 "health",
+                "operator.plugins.inspect",
+                "operator.runs.list",
+                "operator.session.get",
+                "operator.sessions.list",
                 "run.outcome",
                 "run.state",
                 "run.submit",

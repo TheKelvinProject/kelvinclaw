@@ -106,7 +106,7 @@ impl SchedulerStore {
     }
 
     pub fn list_schedules(&self) -> KelvinResult<Vec<ScheduledTask>> {
-        Ok(self.with_state(|state| state.schedules.clone())?)
+        self.with_state(|state| state.schedules.clone())
     }
 
     pub fn recent_slots(

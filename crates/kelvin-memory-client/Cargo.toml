@@ -12,6 +12,7 @@ kelvin-core = { path = "../kelvin-core" }
 kelvin-memory-api = { path = "../kelvin-memory-api" }
 serde_json.workspace = true
 tokio.workspace = true
+tokio-rustls.workspace = true
 tonic.workspace = true
 url.workspace = true
 

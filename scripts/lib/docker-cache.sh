@@ -50,3 +50,20 @@ kelvin_prepare_docker_rust_cache() {
     -v "${cargo_target}:/kelvin-cargo-target"
   )
 }
+
+kelvin_docker_cache_size_kb() {
+  local path="$1"
+  if [[ ! -e "${path}" ]]; then
+    printf '0'
+    return
+  fi
+  du -sk "${path}" 2>/dev/null | awk '{print $1}'
+}
+
+kelvin_list_cache_scope_dirs() {
+  local path="$1"
+  if [[ ! -d "${path}" ]]; then
+    return 0
+  fi
+  find "${path}" -mindepth 1 -maxdepth 1 -type d -print 2>/dev/null
+}

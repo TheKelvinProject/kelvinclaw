@@ -46,8 +46,27 @@ Selection behavior:
 
 - `--plugin <id>` required
 - `--version <version>` optional
-- if version is omitted, installer chooses the highest version (string-sort descending)
+- if version is omitted, installer chooses the highest dotted semver release
 - optional minimum quality gate via `--min-quality-tier` or `KELVIN_PLUGIN_MIN_QUALITY_TIER`
+
+## Hosted Registry API
+
+`apps/kelvin-registry` serves the same `v1` index plus filtered discovery endpoints:
+
+- `GET /healthz`
+- `GET /v1/index.json`
+- `GET /v1/plugins`
+- `GET /v1/plugins/{plugin_id}`
+- `GET /v1/trust-policy`
+
+Example:
+
+```bash
+cargo run -p kelvin-registry -- --index ./index.json --bind 127.0.0.1:34718
+scripts/plugin-discovery.sh --registry-url http://127.0.0.1:34718
+scripts/plugin-index-install.sh --plugin kelvin.cli --registry-url http://127.0.0.1:34718
+scripts/plugin-update-check.sh --registry-url http://127.0.0.1:34718 --json
+```
 
 ## Trust Policy
 
@@ -66,4 +85,5 @@ Registry discovery helper:
 scripts/plugin-discovery.sh
 scripts/plugin-discovery.sh --plugin kelvin.cli
 scripts/plugin-discovery.sh --json
+scripts/plugin-update-check.sh --json
 ```

@@ -1,4 +1,5 @@
 use std::fs;
+use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -455,6 +456,13 @@ fn is_loopback_host(host: &str) -> bool {
     normalized == "localhost" || normalized == "127.0.0.1" || normalized == "::1"
 }
 
+fn ensure_rustls_crypto_provider() {
+    static RUSTLS_PROVIDER: OnceLock<()> = OnceLock::new();
+    let _ = RUSTLS_PROVIDER.get_or_init(|| {
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+    });
+}
+
 fn build_endpoint(cfg: &MemoryClientConfig) -> KelvinResult<Endpoint> {
     let mut endpoint = Endpoint::from_shared(cfg.endpoint.clone()).map_err(|err| {
         KelvinError::InvalidInput(format!(
@@ -483,6 +491,7 @@ fn build_endpoint(cfg: &MemoryClientConfig) -> KelvinResult<Endpoint> {
             cfg.tls_domain_name.trim().to_string()
         };
 
+        ensure_rustls_crypto_provider();
         let mut tls = ClientTlsConfig::new().domain_name(domain_name);
         if let Some(ca_pem) =
             resolve_optional_pem(&cfg.tls_ca_pem, &cfg.tls_ca_path, "memory rpc tls ca")?

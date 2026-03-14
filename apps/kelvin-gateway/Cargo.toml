@@ -19,6 +19,7 @@ axum = "0.8"
 ed25519-dalek.workspace = true
 ring = "0.17"
 kelvin-core = { path = "../../crates/kelvin-core" }
+kelvin-brain = { path = "../../crates/kelvin-brain" }
 kelvin-sdk = { path = "../../crates/kelvin-sdk", default-features = false }
 kelvin-wasm = { path = "../../crates/kelvin-wasm" }
 uuid.workspace = true

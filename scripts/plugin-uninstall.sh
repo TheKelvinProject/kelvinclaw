@@ -59,6 +59,16 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+require_cmd() {
+  local name="$1"
+  if ! command -v "${name}" >/dev/null 2>&1; then
+    echo "Missing required command: ${name}" >&2
+    exit 1
+  fi
+}
+
+require_cmd jq
+
 if [[ -z "${PLUGIN_ID}" ]]; then
   echo "Missing --id <plugin-id>" >&2
   usage
@@ -112,10 +122,17 @@ if [[ -L "${CURRENT_LINK}" ]]; then
     done
     shopt -u nullglob
     if [[ "${#remaining[@]}" -gt 0 ]]; then
-      IFS=$'\n' sorted=($(printf '%s\n' "${remaining[@]}" | sort))
-      unset IFS
-      last_index=$((${#sorted[@]} - 1))
-      next="${sorted[${last_index}]}"
+      next="$(printf '%s\n' "${remaining[@]}" | jq -Rrsc '
+        def version_key:
+          split("+")[0]
+          | split("-")[0]
+          | split(".")
+          | map(tonumber? // 0);
+        split("\n")
+        | map(select(length > 0))
+        | sort_by(version_key)
+        | .[-1] // empty
+      ')"
       ln -sfn "${next}" "${CURRENT_LINK}"
     else
       rm -f "${CURRENT_LINK}"

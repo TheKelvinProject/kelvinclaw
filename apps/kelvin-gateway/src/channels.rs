@@ -1992,6 +1992,17 @@ pub struct ChannelRouteInspectRequest {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    fn unique_state_dir(prefix: &str) -> std::path::PathBuf {
+        let millis = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map(|duration| duration.as_millis())
+            .unwrap_or_default();
+        let path = std::env::temp_dir().join(format!("kelvin-channel-test-{prefix}-{millis}"));
+        std::fs::create_dir_all(&path).expect("create state dir");
+        path
+    }
 
     #[test]
     fn routing_is_deterministic_and_priority_ordered() {
@@ -2130,6 +2141,69 @@ mod tests {
         assert!(status["metrics"]["policy_denied_total"].is_number());
         assert!(status["metrics"]["rate_limited_total"].is_number());
         assert!(status["metrics"]["webhook_denied_total"].is_number());
+    }
+
+    #[test]
+    fn persisted_webhook_metrics_survive_adapter_restart() {
+        let state_dir = unique_state_dir("persist");
+        let config = TextChannelConfig {
+            kind: ChannelKind::Slack,
+            enabled: true,
+            pairing_enabled: false,
+            direct_ingress: ChannelDirectIngressStatusConfig {
+                listener_enabled: true,
+                webhook_path: Some("/ingress/slack".to_string()),
+                verification_method: Some("slack_signing_secret".to_string()),
+                verification_configured: true,
+            },
+            policy: ChannelPolicy {
+                ingress_token: Some("token".to_string()),
+                allow_accounts: HashSet::new(),
+                allow_senders: HashSet::new(),
+                trusted_senders: HashSet::new(),
+                probation_senders: HashSet::new(),
+                blocked_senders: HashSet::new(),
+                quota_standard_per_minute: 10,
+                quota_trusted_per_minute: 20,
+                quota_probation_per_minute: 5,
+                cooldown_probation_ms: 100,
+                max_seen_delivery_ids: 100,
+                max_queue_depth: 100,
+                max_text_bytes: 1024,
+            },
+            transport: ChannelTransportConfig {
+                api_base_url: "https://slack.com/api".to_string(),
+                bot_token: None,
+                outbound_max_retries: 0,
+                outbound_retry_backoff_ms: 1,
+            },
+            wasm_policy_plugin: None,
+        };
+
+        let mut adapter = TextChannelAdapter::new(config.clone(), Some(state_dir.as_path()))
+            .expect("adapter init")
+            .expect("adapter enabled");
+        adapter
+            .record_webhook_denied(401, true, "stale replay window")
+            .expect("persist denied webhook");
+        adapter
+            .record_webhook_verified(200, true)
+            .expect("persist verified webhook");
+        drop(adapter);
+
+        let adapter = TextChannelAdapter::new(config, Some(state_dir.as_path()))
+            .expect("adapter reload")
+            .expect("adapter enabled");
+        let status = adapter.status();
+        assert_eq!(status["metrics"]["webhook_denied_total"], json!(1));
+        assert_eq!(status["metrics"]["verification_failed_total"], json!(1));
+        assert_eq!(status["metrics"]["webhook_retry_total"], json!(2));
+        assert_eq!(status["ingress_verification"]["last_error"], json!(null));
+        assert_eq!(
+            status["ingress_connectivity"]["last_status_code"],
+            json!(200)
+        );
+        assert_eq!(status["state_persistence_enabled"], json!(true));
     }
 
     #[test]

@@ -1,11 +1,19 @@
 use std::fs;
 use std::net::SocketAddr;
+use std::sync::OnceLock;
 
 use tonic::transport::{Server, ServerTlsConfig};
 
 use kelvin_memory_api::v1alpha1::memory_service_server::MemoryServiceServer;
 use kelvin_memory_api::MemoryModuleManifest;
 use kelvin_memory_controller::{MemoryController, MemoryControllerConfig, ProviderRegistry};
+
+fn ensure_rustls_crypto_provider() {
+    static RUSTLS_PROVIDER: OnceLock<()> = OnceLock::new();
+    let _ = RUSTLS_PROVIDER.get_or_init(|| {
+        let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+    });
+}
 
 #[tokio::main]
 async fn main() {
@@ -69,6 +77,7 @@ set KELVIN_MEMORY_ALLOW_INSECURE_NON_LOOPBACK=true only behind a trusted network
 
     let mut server = Server::builder();
     if let Some(identity) = tls_identity {
+        ensure_rustls_crypto_provider();
         let mut tls = ServerTlsConfig::new().identity(identity);
         if let Some(client_ca) = tls_client_ca {
             tls = tls.client_ca_root(client_ca).client_auth_optional(false);

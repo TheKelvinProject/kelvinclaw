@@ -45,6 +45,21 @@ while [[ $# -gt 0 ]]; do
   esac
 done
 
+sort_plugins_json() {
+  jq -c '
+    def version_key:
+      (.version // "0.0.0")
+      | split("+")[0]
+      | split("-")[0]
+      | split(".")
+      | map(tonumber? // 0);
+    sort_by(.id)
+    | group_by(.id)
+    | map(sort_by(version_key) | reverse)
+    | add // []
+  '
+}
+
 if [[ ! -d "${PLUGIN_HOME}" ]]; then
   if [[ "${OUTPUT_FORMAT}" == "json" ]]; then
     echo "[]"
@@ -109,7 +124,7 @@ collect_plugins_json() {
 plugins_json="$(collect_plugins_json)"
 
 if [[ "${OUTPUT_FORMAT}" == "json" ]]; then
-  jq -c 'sort_by(.id, .version)' <<< "${plugins_json}"
+  sort_plugins_json <<< "${plugins_json}"
   exit 0
 fi
 
@@ -120,8 +135,8 @@ if [[ "${count}" == "0" ]]; then
 fi
 
 printf "%-24s %-12s %-8s %-24s %s\n" "ID" "VERSION" "CURRENT" "API_VERSION" "NAME"
-jq -r '
-  sort_by(.id, .version)[] |
+sort_plugins_json <<< "${plugins_json}" | jq -r '
+  .[] |
   [
     .id,
     .version,
@@ -129,7 +144,6 @@ jq -r '
     (.api_version // "-"),
     (.name // "-")
   ] | @tsv
-' <<< "${plugins_json}" | while IFS=$'\t' read -r id version current api_version name; do
+' | while IFS=$'\t' read -r id version current api_version name; do
   printf "%-24s %-12s %-8s %-24s %s\n" "${id}" "${version}" "${current}" "${api_version}" "${name}"
 done
-
