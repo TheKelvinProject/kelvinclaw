@@ -76,6 +76,7 @@ smoke_test_archive() {
 
   work_dir="$(mktemp -d)"
   tar -xzf "${archive_path}" -C "${work_dir}"
+  "${work_dir}/${root_name}/kelvin" --help >/dev/null
   "${work_dir}/${root_name}/bin/kelvin-host" --help >/dev/null
   "${work_dir}/${root_name}/bin/kelvin-gateway" --help >/dev/null
   "${work_dir}/${root_name}/bin/kelvin-registry" --help >/dev/null
@@ -140,7 +141,7 @@ cleanup() {
 }
 trap cleanup EXIT
 
-mkdir -p "${OUTPUT_DIR}" "${STAGE_ROOT}/bin"
+mkdir -p "${OUTPUT_DIR}" "${STAGE_ROOT}/bin" "${STAGE_ROOT}/share"
 
 rustup target add "${TARGET}" >/dev/null
 
@@ -155,11 +156,16 @@ cp "${TARGET_DIR}/${TARGET}/release/kelvin-registry" "${STAGE_ROOT}/bin/"
 cp "${TARGET_DIR}/${TARGET}/release/kelvin-memory-controller" "${STAGE_ROOT}/bin/"
 cp "${ROOT_DIR}/LICENSE" "${STAGE_ROOT}/"
 cp "${ROOT_DIR}/README.md" "${STAGE_ROOT}/"
+cp "${ROOT_DIR}/scripts/kelvin-release-launcher.sh" "${STAGE_ROOT}/kelvin"
+cp "${ROOT_DIR}/release/official-first-party-plugins.env" "${STAGE_ROOT}/share/official-first-party-plugins.env"
+chmod +x "${STAGE_ROOT}/kelvin"
 
 cat > "${STAGE_ROOT}/BUILD_INFO.txt" <<EOF
 version=${VERSION}
 target=${TARGET}
 platform=${PLATFORM_LABEL}
+required_plugin=kelvin.cli@$(awk -F'"' '/^KELVIN_CLI_VERSION=/ {print $2}' "${ROOT_DIR}/release/official-first-party-plugins.env")
+optional_plugin=kelvin.openai@$(awk -F'"' '/^KELVIN_OPENAI_VERSION=/ {print $2}' "${ROOT_DIR}/release/official-first-party-plugins.env")
 EOF
 
 rm -f "${ARCHIVE_PATH}" "${CHECKSUM_PATH}"
