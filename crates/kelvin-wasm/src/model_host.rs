@@ -76,6 +76,7 @@ impl OpenAiResponsesTransport for EnvProviderProfileTransport {
         request: Value,
         policy: &ModelSandboxPolicy,
     ) -> KelvinResult<String> {
+        let request = normalize_provider_request(profile, request);
         let endpoint = provider_endpoint(profile)?;
         let host = endpoint.host_str().ok_or_else(|| {
             KelvinError::InvalidInput(format!("{} endpoint is missing host", profile.id))
@@ -138,6 +139,33 @@ impl OpenAiResponsesTransport for EnvProviderProfileTransport {
 
         Ok(body)
     }
+}
+
+fn normalize_provider_request(profile: &ModelProviderProfile, request: Value) -> Value {
+    if profile.id == OPENAI_RESPONSES_PROFILE_ID {
+        return normalize_openai_request(request);
+    }
+    request
+}
+
+fn normalize_openai_request(mut request: Value) -> Value {
+    let Some(metadata) = request.get_mut("metadata").and_then(Value::as_object_mut) else {
+        return request;
+    };
+    for value in metadata.values_mut() {
+        if value.is_string() {
+            continue;
+        }
+        let normalized = match &*value {
+            Value::Null => "null".to_string(),
+            Value::Bool(boolean) => boolean.to_string(),
+            Value::Number(number) => number.to_string(),
+            Value::String(text) => text.clone(),
+            other => other.to_string(),
+        };
+        *value = Value::String(normalized);
+    }
+    request
 }
 
 fn provider_api_key(profile: &ModelProviderProfile) -> KelvinResult<String> {
@@ -667,12 +695,15 @@ fn backend(context: &str, err: impl Display) -> KelvinError {
 
 #[cfg(test)]
 mod tests {
-    use super::{model_abi, ModelSandboxPolicy, OpenAiResponsesTransport, WasmModelHost};
+    use super::{
+        model_abi, normalize_provider_request, ModelSandboxPolicy, OpenAiResponsesTransport,
+        WasmModelHost,
+    };
     use kelvin_core::{
         KelvinError, KelvinResult, ModelProviderProfile, ANTHROPIC_MESSAGES_PROFILE_ID,
         OPENAI_RESPONSES_PROFILE_ID,
     };
-    use serde_json::json;
+    use serde_json::{json, Value};
     use std::sync::{Arc, Mutex};
 
     struct MockTransport {
@@ -697,6 +728,41 @@ mod tests {
 
     fn parse_wat(input: &str) -> Vec<u8> {
         wat::parse_str(input).expect("parse wat")
+    }
+
+    #[test]
+    fn openai_request_normalization_stringifies_metadata_values() {
+        let profile = ModelProviderProfile::builtin(OPENAI_RESPONSES_PROFILE_ID)
+            .expect("openai profile should resolve");
+        let normalized = normalize_provider_request(
+            &profile,
+            json!({
+                "model": "gpt-4.1-mini",
+                "metadata": {
+                    "run_id": "run-123",
+                    "generated_at_ms": 1773528482973_u64,
+                    "debug": true,
+                    "nested": {"key":"value"}
+                }
+            }),
+        );
+
+        assert_eq!(
+            normalized["metadata"]["run_id"],
+            Value::String("run-123".to_string())
+        );
+        assert_eq!(
+            normalized["metadata"]["generated_at_ms"],
+            Value::String("1773528482973".to_string())
+        );
+        assert_eq!(
+            normalized["metadata"]["debug"],
+            Value::String("true".to_string())
+        );
+        assert_eq!(
+            normalized["metadata"]["nested"],
+            Value::String("{\"key\":\"value\"}".to_string())
+        );
     }
 
     fn legacy_test_module() -> Vec<u8> {

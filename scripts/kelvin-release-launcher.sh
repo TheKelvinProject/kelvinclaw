@@ -14,6 +14,12 @@ TRUST_POLICY_PATH="${KELVIN_TRUST_POLICY_PATH:-${KELVIN_HOME}/trusted_publishers
 STATE_DIR="${KELVIN_STATE_DIR:-${KELVIN_HOME}/state}"
 DEFAULT_PROMPT="${KELVIN_DEFAULT_PROMPT:-What is KelvinClaw?}"
 PLUGIN_MANIFEST_PATH="${ROOT_DIR}/share/official-first-party-plugins.env"
+ENV_SEARCH_PATHS=(
+  "${PWD}/.env.local"
+  "${PWD}/.env"
+  "${KELVIN_HOME}/.env.local"
+  "${KELVIN_HOME}/.env"
+)
 
 usage() {
   cat <<'USAGE'
@@ -32,7 +38,13 @@ Environment:
   KELVIN_TRUST_POLICY_PATH   Override trust policy path
   KELVIN_STATE_DIR           Override host state dir
   KELVIN_DEFAULT_PROMPT      Prompt used for non-interactive no-arg runs
-  OPENAI_API_KEY             If set, also installs kelvin.openai on first run
+  OPENAI_API_KEY             If set, installs and selects kelvin.openai on first run
+
+The launcher also reads OPENAI_API_KEY from:
+  - ./.env.local
+  - ./.env
+  - ~/.kelvinclaw/.env.local
+  - ~/.kelvinclaw/.env
 USAGE
 }
 
@@ -51,6 +63,80 @@ sha256_file() {
     return 0
   fi
   shasum -a 256 "${file}" | awk '{print $1}'
+}
+
+trim_whitespace() {
+  local value="$1"
+  value="${value#"${value%%[![:space:]]*}"}"
+  value="${value%"${value##*[![:space:]]}"}"
+  printf '%s' "${value}"
+}
+
+strip_wrapping_quotes() {
+  local value="$1"
+  if [[ "${value}" == \"*\" && "${value}" == *\" ]]; then
+    printf '%s' "${value:1:${#value}-2}"
+    return
+  fi
+  if [[ "${value}" == \'*\' && "${value}" == *\' ]]; then
+    printf '%s' "${value:1:${#value}-2}"
+    return
+  fi
+  printf '%s' "${value}"
+}
+
+load_env_var_from_file() {
+  local key="$1"
+  local file="$2"
+  local line=""
+  local stripped=""
+  local value=""
+  [[ -f "${file}" ]] || return 1
+
+  while IFS= read -r line || [[ -n "${line}" ]]; do
+    stripped="$(trim_whitespace "${line%%#*}")"
+    [[ -z "${stripped}" ]] && continue
+    if [[ "${stripped}" =~ ^export[[:space:]]+ ]]; then
+      stripped="$(trim_whitespace "${stripped#export }")"
+    fi
+    if [[ "${stripped}" =~ ^${key}[[:space:]]*=[[:space:]]*(.*)$ ]]; then
+      value="$(trim_whitespace "${BASH_REMATCH[1]}")"
+      strip_wrapping_quotes "${value}"
+      return 0
+    fi
+  done < "${file}"
+
+  return 1
+}
+
+load_dotenv_defaults() {
+  local env_file=""
+  local value=""
+  [[ -n "${OPENAI_API_KEY:-}" ]] && return 0
+
+  for env_file in "${ENV_SEARCH_PATHS[@]}"; do
+    if value="$(load_env_var_from_file "OPENAI_API_KEY" "${env_file}")"; then
+      export OPENAI_API_KEY="${value}"
+      return 0
+    fi
+  done
+}
+
+prompt_for_openai_api_key() {
+  local value=""
+  [[ -n "${OPENAI_API_KEY:-}" ]] && return 0
+  [[ $# -eq 0 ]] || return 0
+  [[ -t 0 && -t 1 ]] || return 0
+
+  echo "[kelvin] OPENAI_API_KEY not found in the environment or .env files."
+  printf '[kelvin] Paste your OpenAI API key for this run, or press Enter to continue with echo mode: ' >&2
+  IFS= read -r -s value
+  printf '\n' >&2
+
+  value="$(trim_whitespace "${value}")"
+  if [[ -n "${value}" ]]; then
+    export OPENAI_API_KEY="${value}"
+  fi
 }
 
 plugin_current_version() {
@@ -168,21 +254,31 @@ if [[ $# -gt 0 ]]; then
   esac
 fi
 
+load_dotenv_defaults
+prompt_for_openai_api_key "$@"
+
 bootstrap_official_plugins
 
 mkdir -p "${STATE_DIR}"
 export KELVIN_PLUGIN_HOME="${PLUGIN_HOME}"
 export KELVIN_TRUST_POLICY_PATH="${TRUST_POLICY_PATH}"
 
+DEFAULT_HOST_ARGS=()
+if [[ -n "${OPENAI_API_KEY:-}" ]]; then
+  DEFAULT_HOST_ARGS+=(--model-provider kelvin.openai)
+fi
+
 if [[ $# -eq 0 ]]; then
   if [[ -t 0 && -t 1 ]]; then
     exec "${ROOT_DIR}/bin/kelvin-host" \
+      "${DEFAULT_HOST_ARGS[@]}" \
       --interactive \
       --workspace "$(pwd)" \
       --state-dir "${STATE_DIR}"
   fi
 
   exec "${ROOT_DIR}/bin/kelvin-host" \
+    "${DEFAULT_HOST_ARGS[@]}" \
     --prompt "${DEFAULT_PROMPT}" \
     --workspace "$(pwd)" \
     --state-dir "${STATE_DIR}"

@@ -60,6 +60,20 @@ On first run, `./kelvin` fetches the required official first-party plugins into
 `~/.kelvinclaw`, then starts Kelvin. For manual validation without publishing a GitHub Release, run the
 `Release Linux Executables` workflow with `workflow_dispatch`.
 
+Release prerequisites:
+
+- `curl`
+- `tar`
+- `awk`
+- `ca-certificates` on minimal Linux images
+
+OpenAI key options for the release launcher:
+
+- export `OPENAI_API_KEY` before running `./kelvin`
+- put `OPENAI_API_KEY=...` in `./.env` or `./.env.local`
+- put `OPENAI_API_KEY=...` in `~/.kelvinclaw/.env` or `~/.kelvinclaw/.env.local`
+- if you run `./kelvin` interactively with no key configured, Kelvin prompts once and uses the key for that run only
+
 ## Repository Layout
 
 - `apps/kelvin-host`: thin trusted host executable
