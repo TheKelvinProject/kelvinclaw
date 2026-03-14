@@ -6,13 +6,13 @@ Rotate Root signing keys used for memory delegation JWTs without downtime.
 
 ## Procedure
 
-1. Generate a new Ed25519 keypair offline.
-2. Publish new public key to controller config (`KELVIN_MEMORY_PUBLIC_KEY_PEM`) as staged value.
-3. Deploy controller with acceptance window for both old/new issuers if needed.
-4. Update Root to mint tokens with new private key.
+1. Create or rotate the Ed25519 signer in AWS KMS.
+2. Export the new public key PEM from KMS and stage it into controller config (`KELVIN_MEMORY_PUBLIC_KEY_PEM` or `KELVIN_MEMORY_PUBLIC_KEY_PATH`).
+3. Deploy controller with the staged verifier and acceptance window for both old/new issuers if needed.
+4. Update Root to mint tokens with `KELVIN_MEMORY_SIGNING_KMS_KEY_ID` and optional `KELVIN_MEMORY_SIGNING_KMS_REGION`.
 5. Observe memory RPC success/error rates and token verification failures.
-6. Remove old public key acceptance after steady-state window.
-7. Revoke and securely destroy old private key material.
+6. Remove old public key acceptance after the steady-state window.
+7. Disable and schedule deletion for the old KMS key, or securely destroy legacy offline key material after migration.
 
 ## Validation
 

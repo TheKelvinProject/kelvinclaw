@@ -38,6 +38,14 @@ Controller environment:
 - `KELVIN_MEMORY_TLS_KEY_PEM` or `KELVIN_MEMORY_TLS_KEY_PATH`
 - `KELVIN_MEMORY_TLS_CLIENT_CA_PEM` or `KELVIN_MEMORY_TLS_CLIENT_CA_PATH` (optional mTLS)
 
+Root-side client signing can use:
+
+- `KELVIN_MEMORY_SIGNING_KEY_PEM` or `KELVIN_MEMORY_SIGNING_KEY_PATH`
+- `KELVIN_MEMORY_SIGNING_KMS_KEY_ID` with optional `KELVIN_MEMORY_SIGNING_KMS_REGION`
+
+The controller does not call KMS directly; it verifies against the exported public
+key PEM configured above.
+
 Network safety default:
 
 - Controller refuses non-loopback plaintext binds unless either:

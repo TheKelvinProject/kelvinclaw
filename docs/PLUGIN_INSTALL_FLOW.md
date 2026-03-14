@@ -164,6 +164,17 @@ Install-time checks validate package integrity and structure. Runtime checks in 
 Generate `plugin.sig` from `plugin.json` and emit trust policy snippet:
 
 ```bash
+AWS_PROFILE=ah-willsarg-iam scripts/plugin-sign.sh \
+  --manifest ./plugin.json \
+  --kms-key-id alias/ah/kelvin/plugins/prod \
+  --kms-region us-east-1 \
+  --publisher-id acme \
+  --trust-policy-out ./trusted_publishers.acme.json
+```
+
+PEM signing remains available for community publishers:
+
+```bash
 scripts/plugin-sign.sh \
   --manifest ./plugin.json \
   --private-key ./acme-ed25519-private.pem \

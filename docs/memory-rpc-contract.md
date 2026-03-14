@@ -21,11 +21,15 @@ Source: `crates/kelvin-memory-api/proto/kelvin/memory/v1alpha1/memory.proto`
 - Optional mTLS can be enabled by configuring controller client-CA and client cert/key on root-side client.
 - Root client JWT signing key:
 - `KELVIN_MEMORY_SIGNING_KEY_PEM` or `KELVIN_MEMORY_SIGNING_KEY_PATH`
+- or `KELVIN_MEMORY_SIGNING_KMS_KEY_ID` with optional `KELVIN_MEMORY_SIGNING_KMS_REGION`
 - Root client TLS knobs:
 - `KELVIN_MEMORY_RPC_TLS_CA_PEM` or `KELVIN_MEMORY_RPC_TLS_CA_PATH`
 - `KELVIN_MEMORY_RPC_TLS_DOMAIN_NAME`
 - `KELVIN_MEMORY_RPC_TLS_CLIENT_CERT_PEM` or `KELVIN_MEMORY_RPC_TLS_CLIENT_CERT_PATH`
 - `KELVIN_MEMORY_RPC_TLS_CLIENT_KEY_PEM` or `KELVIN_MEMORY_RPC_TLS_CLIENT_KEY_PATH`
+
+For KMS-backed signing, controller verification still uses an exported public key via
+`KELVIN_MEMORY_PUBLIC_KEY_PEM` or `KELVIN_MEMORY_PUBLIC_KEY_PATH`.
 
 ## Required Context
 

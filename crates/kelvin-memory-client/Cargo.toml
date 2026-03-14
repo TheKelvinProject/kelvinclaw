@@ -7,6 +7,9 @@ authors.workspace = true
 
 [dependencies]
 async-trait.workspace = true
+aws-config.workspace = true
+aws-sdk-kms.workspace = true
+aws-types.workspace = true
 jsonwebtoken.workspace = true
 kelvin-core = { path = "../kelvin-core" }
 kelvin-memory-api = { path = "../kelvin-memory-api" }
@@ -17,6 +20,7 @@ tonic.workspace = true
 url.workspace = true
 
 [dev-dependencies]
+base64.workspace = true
 kelvin-memory-controller = { path = "../kelvin-memory-controller" }
 rcgen = "0.14"
 tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time"] }

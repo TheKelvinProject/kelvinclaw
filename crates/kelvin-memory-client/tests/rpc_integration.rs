@@ -1,6 +1,11 @@
+use std::env;
 use std::net::SocketAddr;
 use std::sync::OnceLock;
 
+use aws_config::BehaviorVersion;
+use aws_sdk_kms::Client as KmsClient;
+use aws_types::region::Region;
+use base64::{engine::general_purpose::STANDARD, Engine as _};
 use rcgen::generate_simple_self_signed;
 use tokio::net::TcpListener;
 use tokio_stream::wrappers::TcpListenerStream;
@@ -99,17 +104,24 @@ fn ensure_rustls_crypto_provider() {
 }
 
 async fn start_test_server() -> SocketAddr {
-    start_test_server_with_tls(None).await
+    start_test_server_with_public_key(None, test_public_key_pem()).await
 }
 
 async fn start_test_server_with_tls(tls: Option<TestTlsMaterial>) -> SocketAddr {
+    start_test_server_with_public_key(tls, test_public_key_pem()).await
+}
+
+async fn start_test_server_with_public_key(
+    tls: Option<TestTlsMaterial>,
+    decoding_key_pem: String,
+) -> SocketAddr {
     let listener = TcpListener::bind("127.0.0.1:0")
         .await
         .expect("bind listener");
     let addr = listener.local_addr().expect("local addr");
 
     let mut cfg = MemoryControllerConfig::default();
-    cfg.decoding_key_pem = test_public_key_pem();
+    cfg.decoding_key_pem = decoding_key_pem;
     let controller =
         MemoryController::new(cfg, ProviderRegistry::with_default_in_memory()).expect("controller");
     controller
@@ -138,6 +150,33 @@ async fn start_test_server_with_tls(tls: Option<TestTlsMaterial>) -> SocketAddr 
     });
 
     addr
+}
+
+fn pem_from_der_public_key(der: &[u8]) -> String {
+    let encoded = STANDARD.encode(der);
+    let mut pem = String::from("-----BEGIN PUBLIC KEY-----\n");
+    for chunk in encoded.as_bytes().chunks(64) {
+        pem.push_str(std::str::from_utf8(chunk).expect("pem chunk"));
+        pem.push('\n');
+    }
+    pem.push_str("-----END PUBLIC KEY-----\n");
+    pem
+}
+
+async fn kms_public_key_pem(key_id: &str, region: &str) -> String {
+    let config = aws_config::defaults(BehaviorVersion::latest())
+        .region(Region::new(region.to_string()))
+        .load()
+        .await;
+    let client = KmsClient::new(&config);
+    let output = client
+        .get_public_key()
+        .key_id(key_id)
+        .send()
+        .await
+        .expect("kms get public key");
+    let der = output.public_key().expect("kms public key");
+    pem_from_der_public_key(der.as_ref())
 }
 
 #[tokio::test]
@@ -297,4 +336,38 @@ async fn rpc_memory_manager_mtls_roundtrip_with_client_identity() {
         .expect("search mtls");
     assert_eq!(hits.len(), 1);
     assert_eq!(hits[0].path, "MTLS.md");
+}
+
+#[tokio::test]
+async fn rpc_memory_manager_kms_signing_roundtrip() {
+    let key_id = match env::var("KELVIN_TEST_AWS_KMS_MEMORY_KEY_ID") {
+        Ok(value) if !value.trim().is_empty() => value,
+        _ => return,
+    };
+    let region =
+        env::var("KELVIN_TEST_AWS_KMS_MEMORY_REGION").unwrap_or_else(|_| "us-east-1".to_string());
+    let public_key_pem = kms_public_key_pem(&key_id, &region).await;
+    let addr = start_test_server_with_public_key(None, public_key_pem).await;
+    let cfg = MemoryClientConfig {
+        endpoint: format!("http://{addr}"),
+        signing_kms_key_id: key_id,
+        signing_kms_region: region,
+        tenant_id: "tenant-kms".to_string(),
+        workspace_id: "workspace-kms".to_string(),
+        session_id: "session-kms".to_string(),
+        module_id: "memory.echo".to_string(),
+        ..Default::default()
+    };
+    let manager = RpcMemoryManager::connect(cfg).await.expect("connect kms");
+    manager
+        .upsert("KMS.md", b"kms signer enabled")
+        .await
+        .expect("upsert kms");
+
+    let hits = manager
+        .search("kms signer", Default::default())
+        .await
+        .expect("search kms");
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, "KMS.md");
 }

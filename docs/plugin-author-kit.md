@@ -46,6 +46,17 @@ For new model plugins, prefer the generic host-routed `provider_profile` field (
 ## Signing
 
 ```bash
+AWS_PROFILE=ah-willsarg-iam scripts/plugin-sign.sh \
+  --manifest ./plugin-acme.echo/plugin.json \
+  --kms-key-id alias/ah/kelvin/plugins/prod \
+  --kms-region us-east-1 \
+  --publisher-id acme \
+  --trust-policy-out ./trusted_publishers.acme.json
+```
+
+For non-AgenticHighway publishers, the local PEM flow remains available:
+
+```bash
 scripts/plugin-sign.sh \
   --manifest ./plugin-acme.echo/plugin.json \
   --private-key /path/to/ed25519-private.pem \

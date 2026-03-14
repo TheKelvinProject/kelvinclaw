@@ -21,5 +21,7 @@ New model plugins should declare a `provider_profile` such as `openai.responses`
 Signing and trust policy:
 
 ```bash
-scripts/plugin-sign.sh --manifest ./plugin.json --private-key /path/to/private.pem --publisher-id acme --trust-policy-out ./trusted_publishers.acme.json
+AWS_PROFILE=ah-willsarg-iam scripts/plugin-sign.sh --manifest ./plugin.json --kms-key-id alias/ah/kelvin/plugins/prod --kms-region us-east-1 --publisher-id acme --trust-policy-out ./trusted_publishers.acme.json
 ```
+
+Community publishers can continue using `--private-key /path/to/private.pem` instead of `--kms-key-id`.

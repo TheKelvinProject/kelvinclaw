@@ -1,5 +1,6 @@
 use std::collections::HashSet;
 
+use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine as _};
 use jsonwebtoken::{decode, encode, Algorithm, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
@@ -148,6 +149,37 @@ pub fn new_request_id() -> String {
     Uuid::new_v4().to_string()
 }
 
+pub fn delegation_token_signing_input(claims: &DelegationClaims) -> ApiResult<String> {
+    let header = Header::new(JWT_ALGORITHM);
+    let header_json =
+        serde_json::to_vec(&header).map_err(|err| ApiError::Serialization(err.to_string()))?;
+    let claims_json =
+        serde_json::to_vec(claims).map_err(|err| ApiError::Serialization(err.to_string()))?;
+    Ok(format!(
+        "{}.{}",
+        URL_SAFE_NO_PAD.encode(header_json),
+        URL_SAFE_NO_PAD.encode(claims_json)
+    ))
+}
+
+pub fn format_signed_delegation_token(signing_input: &str, signature: &[u8]) -> ApiResult<String> {
+    if signing_input.trim().is_empty() {
+        return Err(ApiError::InvalidInput(
+            "delegation signing input must not be empty".to_string(),
+        ));
+    }
+    if signature.is_empty() {
+        return Err(ApiError::InvalidInput(
+            "delegation signature must not be empty".to_string(),
+        ));
+    }
+    Ok(format!(
+        "{}.{}",
+        signing_input,
+        URL_SAFE_NO_PAD.encode(signature)
+    ))
+}
+
 pub fn mint_delegation_token(claims: &DelegationClaims, key: &EncodingKey) -> ApiResult<String> {
     let header = Header::new(JWT_ALGORITHM);
     encode(&header, claims, key).map_err(|err| ApiError::Token(err.to_string()))
@@ -177,8 +209,8 @@ mod tests {
     use prost_types::FileDescriptorSet;
 
     use super::{
-        mint_delegation_token, verify_delegation_token, DelegationClaims, MemoryOperation,
-        RequestLimits, MEMORY_DESCRIPTOR_SET,
+        delegation_token_signing_input, mint_delegation_token, verify_delegation_token,
+        DelegationClaims, MemoryOperation, RequestLimits, MEMORY_DESCRIPTOR_SET,
     };
     use jsonwebtoken::{DecodingKey, EncodingKey};
 
@@ -244,6 +276,14 @@ mod tests {
         .expect("verify");
         assert_eq!(parsed.module_id, "memory.echo");
         assert!(parsed.allows_operation(MemoryOperation::Query));
+    }
+
+    #[test]
+    fn signing_input_has_expected_jwt_shape() {
+        let input = delegation_token_signing_input(&sample_claims()).expect("signing input");
+        let segments = input.split('.').collect::<Vec<_>>();
+        assert_eq!(segments.len(), 2);
+        assert!(segments.iter().all(|segment| !segment.is_empty()));
     }
 
     #[test]

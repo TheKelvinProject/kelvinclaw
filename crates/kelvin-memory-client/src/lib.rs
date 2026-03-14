@@ -3,6 +3,11 @@ use std::sync::OnceLock;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
+use aws_config::BehaviorVersion;
+use aws_sdk_kms::primitives::Blob;
+use aws_sdk_kms::types::{MessageType, SigningAlgorithmSpec};
+use aws_sdk_kms::Client as KmsClient;
+use aws_types::region::Region;
 use jsonwebtoken::EncodingKey;
 use tokio::sync::Mutex;
 use tonic::transport::{Certificate, Channel, ClientTlsConfig, Endpoint, Identity};
@@ -19,7 +24,8 @@ use kelvin_memory_api::v1alpha1::{
     HealthRequest, QueryRequest, ReadRequest, RequestContext, SearchHit, UpsertRequest,
 };
 use kelvin_memory_api::{
-    mint_delegation_token, new_request_id, DelegationClaims, MemoryOperation, RequestLimits,
+    delegation_token_signing_input, format_signed_delegation_token, mint_delegation_token,
+    new_request_id, DelegationClaims, MemoryOperation, RequestLimits,
 };
 
 #[derive(Debug, Clone)]
@@ -34,6 +40,8 @@ pub struct MemoryClientConfig {
     pub module_id: String,
     pub signing_key_pem: String,
     pub signing_key_path: String,
+    pub signing_kms_key_id: String,
+    pub signing_kms_region: String,
     pub tls_ca_pem: String,
     pub tls_ca_path: String,
     pub tls_domain_name: String,
@@ -60,6 +68,8 @@ impl Default for MemoryClientConfig {
             module_id: "memory.echo".to_string(),
             signing_key_pem: String::new(),
             signing_key_path: String::new(),
+            signing_kms_key_id: String::new(),
+            signing_kms_region: String::new(),
             tls_ca_pem: String::new(),
             tls_ca_path: String::new(),
             tls_domain_name: String::new(),
@@ -128,6 +138,16 @@ impl MemoryClientConfig {
                 cfg.signing_key_path = value;
             }
         }
+        if let Ok(value) = std::env::var("KELVIN_MEMORY_SIGNING_KMS_KEY_ID") {
+            if !value.trim().is_empty() {
+                cfg.signing_kms_key_id = value;
+            }
+        }
+        if let Ok(value) = std::env::var("KELVIN_MEMORY_SIGNING_KMS_REGION") {
+            if !value.trim().is_empty() {
+                cfg.signing_kms_region = value;
+            }
+        }
         if let Ok(value) = std::env::var("KELVIN_MEMORY_RPC_TLS_CA_PEM") {
             if !value.trim().is_empty() {
                 cfg.tls_ca_pem = value;
@@ -193,6 +213,7 @@ impl MemoryClientConfig {
         validate_required_field("memory workspace id", &self.workspace_id)?;
         validate_required_field("memory session id", &self.session_id)?;
         validate_required_field("memory module id", &self.module_id)?;
+        validate_signing_config(self)?;
         if self.timeout_ms == 0 {
             return Err(KelvinError::InvalidInput(
                 "memory timeout must be > 0".to_string(),
@@ -235,21 +256,14 @@ impl MemoryClientConfig {
 
 pub struct RpcMemoryManager {
     cfg: MemoryClientConfig,
-    signer: EncodingKey,
+    signer: Box<dyn DelegationTokenSigner>,
     client: Mutex<MemoryServiceClient<Channel>>,
 }
 
 impl RpcMemoryManager {
     pub async fn connect(cfg: MemoryClientConfig) -> KelvinResult<Self> {
         cfg.validate()?;
-        let signing_key_pem = resolve_required_pem(
-            &cfg.signing_key_pem,
-            &cfg.signing_key_path,
-            "memory rpc signing key",
-        )?;
-        let signer = EncodingKey::from_ed_pem(signing_key_pem.as_bytes()).map_err(|err| {
-            KelvinError::InvalidInput(format!("invalid memory rpc signing key pem: {err}"))
-        })?;
+        let signer = resolve_delegation_token_signer(&cfg).await?;
         let endpoint = build_endpoint(&cfg)?;
         let channel = endpoint.connect().await.map_err(|err| {
             KelvinError::Backend(format!(
@@ -265,7 +279,7 @@ impl RpcMemoryManager {
         })
     }
 
-    fn build_context(
+    async fn build_context(
         &self,
         op: MemoryOperation,
         request_id: String,
@@ -295,8 +309,7 @@ impl RpcMemoryManager {
                 max_results: self.cfg.max_results,
             },
         };
-        let token = mint_delegation_token(&claims, &self.signer)
-            .map_err(|err| KelvinError::InvalidInput(format!("failed to mint token: {err}")))?;
+        let token = self.signer.mint_token(&claims).await?;
         Ok(RequestContext {
             delegation_token: token,
             request_id,
@@ -309,7 +322,9 @@ impl RpcMemoryManager {
 
     pub async fn upsert(&self, key: &str, value: &[u8]) -> KelvinResult<()> {
         let request_id = new_request_id();
-        let context = self.build_context(MemoryOperation::Upsert, request_id)?;
+        let context = self
+            .build_context(MemoryOperation::Upsert, request_id)
+            .await?;
         self.client
             .lock()
             .await
@@ -333,7 +348,9 @@ impl MemorySearchManager for RpcMemoryManager {
         opts: MemorySearchOptions,
     ) -> KelvinResult<Vec<MemorySearchResult>> {
         let request_id = new_request_id();
-        let context = self.build_context(MemoryOperation::Query, request_id)?;
+        let context = self
+            .build_context(MemoryOperation::Query, request_id)
+            .await?;
         let max_results = u32::try_from(opts.max_results)
             .unwrap_or(self.cfg.max_results)
             .min(self.cfg.max_results);
@@ -358,7 +375,9 @@ impl MemorySearchManager for RpcMemoryManager {
 
     async fn read_file(&self, params: MemoryReadParams) -> KelvinResult<MemoryReadResult> {
         let request_id = new_request_id();
-        let context = self.build_context(MemoryOperation::Read, request_id)?;
+        let context = self
+            .build_context(MemoryOperation::Read, request_id)
+            .await?;
         let response = self
             .client
             .lock()
@@ -405,7 +424,9 @@ impl MemorySearchManager for RpcMemoryManager {
 
     async fn sync(&self, _params: Option<MemorySyncParams>) -> KelvinResult<()> {
         let request_id = new_request_id();
-        let context = self.build_context(MemoryOperation::Health, request_id)?;
+        let context = self
+            .build_context(MemoryOperation::Health, request_id)
+            .await?;
         self.client
             .lock()
             .await
@@ -429,6 +450,86 @@ impl MemorySearchManager for RpcMemoryManager {
     }
 }
 
+#[async_trait]
+trait DelegationTokenSigner: Send + Sync {
+    async fn mint_token(&self, claims: &DelegationClaims) -> KelvinResult<String>;
+}
+
+struct PemDelegationTokenSigner {
+    key: EncodingKey,
+}
+
+#[async_trait]
+impl DelegationTokenSigner for PemDelegationTokenSigner {
+    async fn mint_token(&self, claims: &DelegationClaims) -> KelvinResult<String> {
+        mint_delegation_token(claims, &self.key)
+            .map_err(|err| KelvinError::InvalidInput(format!("failed to mint token: {err}")))
+    }
+}
+
+struct KmsDelegationTokenSigner {
+    key_id: String,
+    client: KmsClient,
+}
+
+#[async_trait]
+impl DelegationTokenSigner for KmsDelegationTokenSigner {
+    async fn mint_token(&self, claims: &DelegationClaims) -> KelvinResult<String> {
+        let signing_input = delegation_token_signing_input(claims)
+            .map_err(|err| KelvinError::InvalidInput(format!("failed to prepare token: {err}")))?;
+        let response = self
+            .client
+            .sign()
+            .key_id(&self.key_id)
+            .message(Blob::new(signing_input.as_bytes()))
+            .message_type(MessageType::Raw)
+            .signing_algorithm(SigningAlgorithmSpec::Ed25519Sha512)
+            .send()
+            .await
+            .map_err(|err| {
+                KelvinError::Backend(format!(
+                    "failed to sign memory delegation token with aws kms key '{}': {err}",
+                    self.key_id
+                ))
+            })?;
+        let signature = response.signature().ok_or_else(|| {
+            KelvinError::Backend(format!(
+                "aws kms key '{}' returned no signature for memory delegation token",
+                self.key_id
+            ))
+        })?;
+        format_signed_delegation_token(&signing_input, signature.as_ref()).map_err(|err| {
+            KelvinError::InvalidInput(format!("failed to assemble signed token: {err}"))
+        })
+    }
+}
+
+async fn resolve_delegation_token_signer(
+    cfg: &MemoryClientConfig,
+) -> KelvinResult<Box<dyn DelegationTokenSigner>> {
+    if !cfg.signing_kms_key_id.trim().is_empty() {
+        let mut loader = aws_config::defaults(BehaviorVersion::latest());
+        if !cfg.signing_kms_region.trim().is_empty() {
+            loader = loader.region(Region::new(cfg.signing_kms_region.trim().to_string()));
+        }
+        let shared_config = loader.load().await;
+        return Ok(Box::new(KmsDelegationTokenSigner {
+            key_id: cfg.signing_kms_key_id.trim().to_string(),
+            client: KmsClient::new(&shared_config),
+        }));
+    }
+
+    let signing_key_pem = resolve_required_pem(
+        &cfg.signing_key_pem,
+        &cfg.signing_key_path,
+        "memory rpc signing key",
+    )?;
+    let signer = EncodingKey::from_ed_pem(signing_key_pem.as_bytes()).map_err(|err| {
+        KelvinError::InvalidInput(format!("invalid memory rpc signing key pem: {err}"))
+    })?;
+    Ok(Box::new(PemDelegationTokenSigner { key: signer }))
+}
+
 fn parse_bool(value: &str) -> bool {
     matches!(
         value.to_ascii_lowercase().as_str(),
@@ -447,6 +548,29 @@ fn validate_required_field(label: &str, value: &str) -> KelvinResult<()> {
         return Err(KelvinError::InvalidInput(format!(
             "{label} must not include control characters"
         )));
+    }
+    Ok(())
+}
+
+fn validate_signing_config(cfg: &MemoryClientConfig) -> KelvinResult<()> {
+    let has_kms_key = !cfg.signing_kms_key_id.trim().is_empty();
+    let has_pem = !cfg.signing_key_pem.trim().is_empty() || !cfg.signing_key_path.trim().is_empty();
+
+    if has_kms_key && has_pem {
+        return Err(KelvinError::InvalidInput(
+            "memory signing config cannot set both PEM signing material and KMS signing key"
+                .to_string(),
+        ));
+    }
+    if !has_kms_key && !has_pem {
+        return Err(KelvinError::InvalidInput(
+            "memory signing config requires either PEM signing material or KMS key id".to_string(),
+        ));
+    }
+    if !cfg.signing_kms_region.trim().is_empty() && !has_kms_key {
+        return Err(KelvinError::InvalidInput(
+            "memory signing kms region requires KELVIN_MEMORY_SIGNING_KMS_KEY_ID".to_string(),
+        ));
     }
     Ok(())
 }
@@ -663,5 +787,23 @@ mod tests {
         cfg.signing_key_pem = "placeholder".to_string();
         let err = cfg.validate().expect_err("empty subject should fail");
         assert!(err.to_string().contains("memory rpc subject"));
+    }
+
+    #[test]
+    fn config_validate_accepts_kms_signing_without_pem() {
+        let mut cfg = MemoryClientConfig::default();
+        cfg.signing_kms_key_id = "alias/ah/kelvin/memory-jwt/prod".to_string();
+        cfg.validate().expect("kms signing config should validate");
+    }
+
+    #[test]
+    fn config_validate_rejects_mixed_pem_and_kms_signing() {
+        let mut cfg = MemoryClientConfig::default();
+        cfg.signing_key_pem = "placeholder".to_string();
+        cfg.signing_kms_key_id = "alias/ah/kelvin/memory-jwt/prod".to_string();
+        let err = cfg
+            .validate()
+            .expect_err("mixed signing inputs should fail");
+        assert!(err.to_string().contains("cannot set both"));
     }
 }
