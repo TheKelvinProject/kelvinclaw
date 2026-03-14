@@ -38,7 +38,7 @@ jobs:
           toolchain: stable
 
       - name: Restore Rust cache
-        uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5
+        uses: Swatinem/rust-cache@f13886b937689c021905a6b90929199931d60db1
 
       - name: Build and package Linux executables
         run: scripts/package-linux-release.sh --target "${{ matrix.target }}"
