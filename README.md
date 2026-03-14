@@ -44,10 +44,20 @@ Tagged releases publish Linux executable bundles for:
 - `kelvin-gateway`
 - `kelvin-memory-controller`
 - `kelvin-registry`
+- top-level `./kelvin` launcher
 
 The release workflow is backed by Blacksmith runners and produces native
 `linux-x86_64` and `linux-arm64` tarballs with matching SHA-256 files.
-For manual validation without publishing a GitHub Release, run the
+The intended end-user entrypoint is:
+
+```bash
+tar -xzf kelvinclaw-<version>-linux-<arch>.tar.gz
+cd kelvinclaw-<version>-linux-<arch>
+./kelvin
+```
+
+On first run, `./kelvin` fetches the required official first-party plugins into
+`~/.kelvinclaw`, then starts Kelvin. For manual validation without publishing a GitHub Release, run the
 `Release Linux Executables` workflow with `workflow_dispatch`.
 
 ## Repository Layout
