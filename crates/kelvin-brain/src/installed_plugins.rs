@@ -17,9 +17,9 @@ use wasmparser::{Parser, Payload};
 
 use kelvin_core::{
     InMemoryPluginRegistry, KelvinError, KelvinResult, ModelInput, ModelOutput, ModelProvider,
-    ModelProviderProfile, PluginCapability, PluginFactory, PluginManifest, PluginRegistry,
-    PluginSecurityPolicy, SdkModelProviderRegistry, SdkToolRegistry, Tool, ToolCallInput,
-    ToolCallResult, ANTHROPIC_MESSAGES_PROFILE_ID, OPENAI_RESPONSES_PROFILE_ID,
+    ModelProviderProfile, ModelProviderProtocolFamily, PluginCapability, PluginFactory,
+    PluginManifest, PluginRegistry, PluginSecurityPolicy, SdkModelProviderRegistry,
+    SdkToolRegistry, Tool, ToolCallInput, ToolCallResult,
 };
 use kelvin_wasm::{
     model_abi, ClawCall, ModelSandboxPolicy, SandboxPolicy, WasmModelHost, WasmSkillHost,
@@ -230,6 +230,7 @@ impl PublisherTrustPolicy {
     ) -> KelvinResult<()> {
         let signature_path = version_dir.join("plugin.sig");
         let has_signature = signature_path.is_file();
+        let quality_tier = manifest.quality_tier();
 
         if let Some(expected_publisher) = self.pinned_plugin_publishers.get(&manifest.id) {
             match manifest.publisher.as_deref() {
@@ -259,6 +260,10 @@ impl PublisherTrustPolicy {
         }
 
         if !self.require_signature && !has_signature {
+            return Ok(());
+        }
+
+        if quality_tier == "unsigned_local" && !has_signature {
             return Ok(());
         }
 
@@ -342,11 +347,12 @@ struct InstalledPluginPackageManifest {
     runtime: Option<String>,
     tool_name: Option<String>,
     provider_name: Option<String>,
-    provider_profile: Option<String>,
+    provider_profile: Option<ModelProviderProfile>,
     model_name: Option<String>,
     entrypoint: String,
     entrypoint_sha256: Option<String>,
     publisher: Option<String>,
+    quality_tier: Option<String>,
     #[serde(default)]
     capability_scopes: CapabilityScopesManifest,
     #[serde(default)]
@@ -427,6 +433,13 @@ impl InstalledPluginPackageManifest {
         self.runtime
             .as_deref()
             .unwrap_or(DEFAULT_TOOL_RUNTIME_KIND)
+            .trim()
+    }
+
+    fn quality_tier(&self) -> &str {
+        self.quality_tier
+            .as_deref()
+            .unwrap_or("unsigned_local")
             .trim()
     }
 
@@ -512,12 +525,15 @@ impl InstalledPluginPackageManifest {
         Ok(candidate)
     }
 
-    fn resolved_provider_profile_id(&self) -> Option<String> {
-        self.provider_profile
-            .as_deref()
-            .map(str::trim)
-            .filter(|candidate| !candidate.is_empty())
-            .map(|candidate| candidate.to_string())
+    fn resolved_provider_profile(&self) -> KelvinResult<ModelProviderProfile> {
+        let Some(profile) = self.provider_profile.clone() else {
+            return Err(KelvinError::InvalidInput(format!(
+                "plugin '{}' requires a structured provider_profile object",
+                self.id
+            )));
+        };
+        profile.validate()?;
+        Ok(profile)
     }
 }
 
@@ -527,55 +543,20 @@ struct ModelPluginAbiUsage {
     uses_provider_profile_import: bool,
 }
 
-fn resolve_builtin_provider_profile(profile_id: &str) -> KelvinResult<ModelProviderProfile> {
-    ModelProviderProfile::builtin(profile_id).ok_or_else(|| {
-        KelvinError::InvalidInput(format!(
-            "unsupported provider_profile '{}'",
-            profile_id.trim()
-        ))
-    })
-}
-
 fn resolve_model_provider_profile(
     manifest: &InstalledPluginPackageManifest,
     abi_usage: ModelPluginAbiUsage,
 ) -> KelvinResult<Option<ModelProviderProfile>> {
-    if let Some(profile_id) = manifest.resolved_provider_profile_id() {
-        let profile = resolve_builtin_provider_profile(&profile_id)?;
-        if abi_usage.uses_openai_import && profile.id != OPENAI_RESPONSES_PROFILE_ID {
-            return Err(KelvinError::InvalidInput(format!(
-                "plugin '{}' uses legacy openai import but provider_profile '{}' is not compatible",
-                manifest.id, profile.id
-            )));
-        }
-        return Ok(Some(profile));
-    }
-
-    if abi_usage.uses_provider_profile_import {
+    let profile = manifest.resolved_provider_profile()?;
+    if abi_usage.uses_openai_import
+        && profile.protocol_family != ModelProviderProtocolFamily::OpenAiResponses
+    {
         return Err(KelvinError::InvalidInput(format!(
-            "plugin '{}' uses provider_profile_call but is missing provider_profile",
-            manifest.id
+            "plugin '{}' uses legacy openai import but provider_profile '{}' is not compatible",
+            manifest.id, profile.id
         )));
     }
-
-    if abi_usage.uses_openai_import {
-        return Ok(Some(resolve_builtin_provider_profile(
-            OPENAI_RESPONSES_PROFILE_ID,
-        )?));
-    }
-
-    if manifest
-        .provider_name
-        .as_deref()
-        .map(str::trim)
-        .is_some_and(|provider_name| provider_name.eq_ignore_ascii_case("openai"))
-    {
-        return Ok(Some(resolve_builtin_provider_profile(
-            OPENAI_RESPONSES_PROFILE_ID,
-        )?));
-    }
-
-    Ok(None)
+    Ok(Some(profile))
 }
 
 #[derive(Debug, Default)]
@@ -891,10 +872,10 @@ impl InstalledWasmModelProvider {
 }
 
 fn adapt_provider_response(profile: &ModelProviderProfile, value: &Value) -> Option<ModelOutput> {
-    match profile.id.as_str() {
-        OPENAI_RESPONSES_PROFILE_ID => adapt_openai_response(value),
-        ANTHROPIC_MESSAGES_PROFILE_ID => adapt_anthropic_response(value),
-        _ => None,
+    match profile.protocol_family {
+        ModelProviderProtocolFamily::OpenAiResponses => adapt_openai_response(value),
+        ModelProviderProtocolFamily::AnthropicMessages => adapt_anthropic_response(value),
+        ModelProviderProtocolFamily::OpenAiChatCompletions => adapt_openrouter_response(value),
     }
 }
 
@@ -968,9 +949,67 @@ fn adapt_anthropic_response(value: &Value) -> Option<ModelOutput> {
     })
 }
 
+fn adapt_openrouter_response(value: &Value) -> Option<ModelOutput> {
+    let choices = value.get("choices")?.as_array()?;
+    let first_choice = choices.first()?;
+    let message = first_choice.get("message")?;
+    let assistant_text = match message.get("content")? {
+        Value::String(text) => text.clone(),
+        Value::Array(parts) => {
+            let mut text_parts = Vec::new();
+            for part in parts {
+                if part.get("type").and_then(Value::as_str) == Some("text") {
+                    if let Some(text) = part.get("text").and_then(Value::as_str) {
+                        text_parts.push(text.to_string());
+                    }
+                }
+            }
+            if text_parts.is_empty() {
+                return None;
+            }
+            text_parts.join("\n")
+        }
+        _ => return None,
+    };
+    let usage = value.get("usage").and_then(adapt_openrouter_usage);
+    let stop_reason = first_choice
+        .get("finish_reason")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    Some(ModelOutput {
+        assistant_text,
+        stop_reason,
+        tool_calls: Vec::new(),
+        usage,
+    })
+}
+
 fn adapt_usage(usage: &Value) -> Option<kelvin_core::ModelUsage> {
     let input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
     let output_tokens = usage.get("output_tokens").and_then(Value::as_u64);
+    let total_tokens = usage
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| match (input_tokens, output_tokens) {
+            (Some(input), Some(output)) => Some(input + output),
+            _ => None,
+        });
+
+    if input_tokens.is_none() && output_tokens.is_none() && total_tokens.is_none() {
+        return None;
+    }
+
+    Some(kelvin_core::ModelUsage {
+        input_tokens,
+        output_tokens,
+        total_tokens,
+    })
+}
+
+fn adapt_openrouter_usage(usage: &Value) -> Option<kelvin_core::ModelUsage> {
+    let input_tokens = usage.get("prompt_tokens").and_then(Value::as_u64);
+    let output_tokens = usage.get("completion_tokens").and_then(Value::as_u64);
     let total_tokens = usage
         .get("total_tokens")
         .and_then(Value::as_u64)
@@ -1769,11 +1808,13 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        adapt_anthropic_response, adapt_openai_response, load_installed_plugins,
-        load_installed_tool_plugins, sha256_hex, InstalledPluginLoaderConfig, PublisherTrustPolicy,
+        adapt_anthropic_response, adapt_openai_response, adapt_openrouter_response,
+        load_installed_plugins, load_installed_tool_plugins, sha256_hex,
+        InstalledPluginLoaderConfig, PublisherTrustPolicy,
     };
     use kelvin_core::{
-        ModelOutput, PluginSecurityPolicy, ToolCallInput, ToolRegistry, OPENAI_RESPONSES_PROFILE_ID,
+        ModelOutput, ModelProviderAuthScheme, ModelProviderProfile, ModelProviderProtocolFamily,
+        PluginSecurityPolicy, ToolCallInput, ToolRegistry, OPENAI_RESPONSES_PROFILE_ID,
     };
 
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
@@ -1852,6 +1893,8 @@ mod tests {
     }
 
     fn default_model_manifest(plugin_id: &str, version: &str) -> serde_json::Value {
+        let profile = ModelProviderProfile::builtin(OPENAI_RESPONSES_PROFILE_ID)
+            .expect("openai builtin profile");
         json!({
             "id": plugin_id,
             "name": "Installed Model Plugin",
@@ -1863,7 +1906,7 @@ mod tests {
             "experimental": false,
             "runtime": "wasm_model_v1",
             "provider_name": "openai",
-            "provider_profile": OPENAI_RESPONSES_PROFILE_ID,
+            "provider_profile": profile,
             "model_name": "gpt-4.1-mini",
             "entrypoint": "model.wasm",
             "entrypoint_sha256": null,
@@ -1938,6 +1981,57 @@ mod tests {
                 }),
             }
         );
+    }
+
+    #[test]
+    fn adapts_openrouter_provider_response_into_model_output() {
+        let output = adapt_openrouter_response(&json!({
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "KelvinClaw can route model calls through OpenRouter."
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 9,
+                "completion_tokens": 8,
+                "total_tokens": 17
+            }
+        }))
+        .expect("openrouter provider response should adapt");
+
+        assert_eq!(
+            output,
+            ModelOutput {
+                assistant_text: "KelvinClaw can route model calls through OpenRouter.".to_string(),
+                stop_reason: Some("stop".to_string()),
+                tool_calls: Vec::new(),
+                usage: Some(kelvin_core::ModelUsage {
+                    input_tokens: Some(9),
+                    output_tokens: Some(8),
+                    total_tokens: Some(17),
+                }),
+            }
+        );
+    }
+
+    fn openrouter_profile() -> ModelProviderProfile {
+        ModelProviderProfile {
+            id: "openrouter.chat".to_string(),
+            provider_name: "openrouter".to_string(),
+            protocol_family: ModelProviderProtocolFamily::OpenAiChatCompletions,
+            api_key_env: "OPENROUTER_API_KEY".to_string(),
+            base_url_env: "OPENROUTER_BASE_URL".to_string(),
+            default_base_url: "https://openrouter.ai/api/v1".to_string(),
+            endpoint_path: "chat/completions".to_string(),
+            auth_header: "authorization".to_string(),
+            auth_scheme: ModelProviderAuthScheme::Bearer,
+            static_headers: Vec::new(),
+            default_allow_hosts: vec!["openrouter.ai".to_string()],
+        }
     }
 
     #[tokio::test]
@@ -2029,6 +2123,62 @@ mod tests {
             Err(err) => err,
         };
         assert!(err.to_string().contains("missing required plugin.sig"));
+    }
+
+    #[test]
+    fn unsigned_local_model_plugin_without_signature_still_loads() {
+        let plugin_home = unique_temp_dir("unsigned-local-model");
+        let mut manifest = default_model_manifest("acme.local-openrouter", "1.0.0");
+        manifest["provider_name"] = json!("openrouter");
+        manifest["provider_profile"] =
+            serde_json::to_value(openrouter_profile()).expect("serialize openrouter profile");
+        manifest["model_name"] = json!("openai/gpt-4.1-mini");
+        manifest["publisher"] = serde_json::Value::Null;
+        manifest["quality_tier"] = json!("unsigned_local");
+        manifest["capability_scopes"]["network_allow_hosts"] = json!(["openrouter.ai"]);
+
+        write_installed_plugin(
+            &plugin_home,
+            "acme.local-openrouter",
+            "1.0.0",
+            manifest,
+            r#"
+            (module
+              (import "kelvin_model_host_v1" "provider_profile_call" (func $provider_profile_call (param i32 i32) (result i64)))
+              (import "kelvin_model_host_v1" "log" (func $log (param i32 i32 i32) (result i32)))
+              (import "kelvin_model_host_v1" "clock_now_ms" (func $clock_now_ms (result i64)))
+              (memory (export "memory") 2)
+              (global $heap (mut i32) (i32.const 1024))
+              (func (export "alloc") (param $len i32) (result i32)
+                (local $ptr i32)
+                global.get $heap
+                local.tee $ptr
+                local.get $len
+                i32.add
+                global.set $heap
+                local.get $ptr)
+              (func (export "dealloc") (param i32 i32))
+              (func (export "infer") (param $ptr i32) (param $len i32) (result i64)
+                local.get $ptr
+                local.get $len
+                call $provider_profile_call)
+            )
+            "#,
+            None,
+        );
+
+        let loaded = load_installed_plugins(InstalledPluginLoaderConfig {
+            plugin_home,
+            core_version: "0.1.0".to_string(),
+            security_policy: PluginSecurityPolicy::default(),
+            trust_policy: PublisherTrustPolicy::default(),
+        })
+        .expect("unsigned_local plugin should load without signature");
+
+        assert_eq!(
+            loaded.loaded_plugins[0].provider_profile.as_deref(),
+            Some("openrouter.chat")
+        );
     }
 
     #[tokio::test]
@@ -2210,8 +2360,8 @@ mod tests {
     }
 
     #[test]
-    fn legacy_openai_model_plugin_without_provider_profile_still_loads() {
-        let plugin_home = unique_temp_dir("legacy-openai-model");
+    fn rejects_model_plugin_without_provider_profile() {
+        let plugin_home = unique_temp_dir("missing-provider-profile");
         let signing_key = SigningKey::from_bytes(&[13_u8; 32]);
         let public_key = base64::engine::general_purpose::STANDARD
             .encode(signing_key.verifying_key().to_bytes());
@@ -2255,17 +2405,78 @@ mod tests {
         let trust_policy = PublisherTrustPolicy::default()
             .with_publisher_key("acme", &public_key)
             .expect("publisher key");
+        let err = match load_installed_plugins(InstalledPluginLoaderConfig {
+            plugin_home,
+            core_version: "0.1.0".to_string(),
+            security_policy: PluginSecurityPolicy::default(),
+            trust_policy,
+        }) {
+            Ok(_) => panic!("missing provider_profile should fail"),
+            Err(err) => err,
+        };
+        assert!(err
+            .to_string()
+            .contains("requires a structured provider_profile object"));
+    }
+
+    #[test]
+    fn loads_openrouter_model_plugin_with_structured_provider_profile() {
+        let plugin_home = unique_temp_dir("load-openrouter-model");
+        let signing_key = SigningKey::from_bytes(&[15_u8; 32]);
+        let public_key = base64::engine::general_purpose::STANDARD
+            .encode(signing_key.verifying_key().to_bytes());
+
+        let mut manifest = default_model_manifest("acme.openrouter", "1.0.0");
+        manifest["provider_name"] = json!("openrouter");
+        manifest["provider_profile"] =
+            serde_json::to_value(openrouter_profile()).expect("serialize openrouter profile");
+        manifest["model_name"] = json!("openai/gpt-4.1-mini");
+        manifest["capability_scopes"]["network_allow_hosts"] = json!(["openrouter.ai"]);
+
+        write_installed_plugin(
+            &plugin_home,
+            "acme.openrouter",
+            "1.0.0",
+            manifest,
+            r#"
+            (module
+              (import "kelvin_model_host_v1" "provider_profile_call" (func $provider_profile_call (param i32 i32) (result i64)))
+              (import "kelvin_model_host_v1" "log" (func $log (param i32 i32 i32) (result i32)))
+              (import "kelvin_model_host_v1" "clock_now_ms" (func $clock_now_ms (result i64)))
+              (memory (export "memory") 2)
+              (global $heap (mut i32) (i32.const 1024))
+              (func (export "alloc") (param $len i32) (result i32)
+                (local $ptr i32)
+                global.get $heap
+                local.tee $ptr
+                local.get $len
+                i32.add
+                global.set $heap
+                local.get $ptr)
+              (func (export "dealloc") (param i32 i32))
+              (func (export "infer") (param $ptr i32) (param $len i32) (result i64)
+                local.get $ptr
+                local.get $len
+                call $provider_profile_call)
+            )
+            "#,
+            Some(&signing_key),
+        );
+
+        let trust_policy = PublisherTrustPolicy::default()
+            .with_publisher_key("acme", &public_key)
+            .expect("publisher key");
         let loaded = load_installed_plugins(InstalledPluginLoaderConfig {
             plugin_home,
             core_version: "0.1.0".to_string(),
             security_policy: PluginSecurityPolicy::default(),
             trust_policy,
         })
-        .expect("load legacy model plugin");
+        .expect("load openrouter model plugin");
 
         assert_eq!(
             loaded.loaded_plugins[0].provider_profile.as_deref(),
-            Some(OPENAI_RESPONSES_PROFILE_ID)
+            Some("openrouter.chat")
         );
     }
 

@@ -90,6 +90,49 @@ quality_tier_valid() {
   esac
 }
 
+builtin_provider_profile_json() {
+  case "$1" in
+    openai.responses)
+      printf '%s\n' '{
+  "id": "openai.responses",
+  "provider_name": "openai",
+  "protocol_family": "openai_responses",
+  "api_key_env": "OPENAI_API_KEY",
+  "base_url_env": "OPENAI_BASE_URL",
+  "default_base_url": "https://api.openai.com",
+  "endpoint_path": "v1/responses",
+  "auth_header": "authorization",
+  "auth_scheme": "bearer",
+  "static_headers": [],
+  "default_allow_hosts": ["api.openai.com"]
+}'
+      ;;
+    anthropic.messages)
+      printf '%s\n' '{
+  "id": "anthropic.messages",
+  "provider_name": "anthropic",
+  "protocol_family": "anthropic_messages",
+  "api_key_env": "ANTHROPIC_API_KEY",
+  "base_url_env": "ANTHROPIC_BASE_URL",
+  "default_base_url": "https://api.anthropic.com",
+  "endpoint_path": "v1/messages",
+  "auth_header": "x-api-key",
+  "auth_scheme": "raw",
+  "static_headers": [
+    {
+      "name": "anthropic-version",
+      "value": "2023-06-01"
+    }
+  ],
+  "default_allow_hosts": ["api.anthropic.com"]
+}'
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 provider_profile_default_provider_name() {
   case "$1" in
     openai.responses) printf '%s' "openai" ;;
@@ -98,19 +141,22 @@ provider_profile_default_provider_name() {
   esac
 }
 
-provider_profile_default_model_name() {
-  case "$1" in
-    openai.responses) printf '%s' "gpt-4.1-mini" ;;
-    anthropic.messages) printf '%s' "claude-haiku-4-5-20251001" ;;
-    *) printf '%s' "default" ;;
-  esac
-}
-
-provider_profile_default_hosts_json() {
-  case "$1" in
-    openai.responses) printf '%s\n' '["api.openai.com"]' ;;
-    anthropic.messages) printf '%s\n' '["api.anthropic.com"]' ;;
-    *) printf '%s\n' '[]' ;;
+protocol_family_default_model_name() {
+  local protocol_family="$1"
+  local provider_name="${2:-}"
+  case "${protocol_family}" in
+    openai_responses) printf '%s' "gpt-4.1-mini" ;;
+    anthropic_messages) printf '%s' "claude-haiku-4-5-20251001" ;;
+    openai_chat_completions)
+      if [[ "${provider_name}" == "openrouter" ]]; then
+        printf '%s' "openai/gpt-4.1-mini"
+      else
+        printf '%s' "default"
+      fi
+      ;;
+    *)
+      printf '%s' "default"
+      ;;
   esac
 }
 
@@ -303,14 +349,23 @@ Options:
   --runtime <kind>          wasm_tool_v1 or wasm_model_v1 (default: wasm_tool_v1)
   --out <dir>               Output directory (default: ./plugin-<id>)
   --tool-name <name>        Tool runtime: tool name (default: derived from id)
-  --provider-name <name>    Model runtime: provider name (default: derived from id)
-  --provider-profile <id>   Model runtime: host-enforced provider profile id (default: openai.responses)
-  --model-name <name>       Model runtime: model name (default: profile-specific default)
+  --provider-name <name>    Model runtime: provider name (default: derived from profile or id)
+  --provider-profile <id>   Model runtime: provider_profile.id (default: openai.responses)
+  --protocol-family <name>  Model runtime: openai_responses|openai_chat_completions|anthropic_messages
+  --api-key-env <name>      Model runtime: API key environment variable
+  --base-url-env <name>     Model runtime: base URL override environment variable
+  --default-base-url <url>  Model runtime: default provider base URL
+  --endpoint-path <path>    Model runtime: relative endpoint path (example: v1/responses)
+  --auth-header <name>      Model runtime: auth header name (default: authorization)
+  --auth-scheme <name>      Model runtime: bearer|raw (default: bearer)
+  --allow-host <host>       Model runtime: allowed host pattern (repeatable)
+  --model-name <name>       Model runtime: model name (default: protocol-family default)
   --entrypoint <path>       Relative wasm payload path (default: plugin.wasm)
   --quality-tier <tier>     unsigned_local|signed_community|signed_trusted (default: unsigned_local)
 
-`wasm_model_v1` scaffolds also create Rust guest source and run a local build, so
-`cargo`, `rustup`, and `jq` must be available.
+`wasm_model_v1` scaffolds emit a structured `provider_profile` object, create a
+Rust guest source project, and run a local build, so `cargo`, `rustup`, and
+`jq` must be available.
 USAGE
 }
 
@@ -452,12 +507,28 @@ validate_manifest_and_layout() {
       echo "wasm_model_v1 requires capability 'model_provider'" >&2
       return 1
     }
-    jq -e '(.provider_name // "" | type=="string") and (.provider_profile // "" | type=="string")' "${manifest_path}" >/dev/null || {
-      echo "wasm_model_v1 provider_name/provider_profile fields must be strings when present" >&2
+    jq -e '
+      ((.provider_name == null) or (.provider_name | type=="string" and length>0)) and
+      (.provider_profile | type=="object") and
+      (.provider_profile.id | type=="string" and length>0) and
+      (.provider_profile.provider_name | type=="string" and length>0) and
+      (.provider_profile.protocol_family | type=="string" and (. == "openai_responses" or . == "openai_chat_completions" or . == "anthropic_messages")) and
+      (.provider_profile.api_key_env | type=="string" and length>0) and
+      (.provider_profile.base_url_env | type=="string" and length>0) and
+      (.provider_profile.default_base_url | type=="string" and length>0) and
+      (.provider_profile.endpoint_path | type=="string" and length>0) and
+      (.provider_profile.auth_header | type=="string" and length>0) and
+      (.provider_profile.auth_scheme | type=="string" and (. == "bearer" or . == "raw")) and
+      (.provider_profile.static_headers | type=="array") and
+      ([.provider_profile.static_headers[]? | (.name | type=="string" and length>0) and (.value | type=="string" and length>0)] | all) and
+      (.provider_profile.default_allow_hosts | type=="array" and length>0) and
+      ([.provider_profile.default_allow_hosts[] | type=="string" and length>0] | all)
+    ' "${manifest_path}" >/dev/null || {
+      echo "wasm_model_v1 requires a structured provider_profile object" >&2
       return 1
     }
-    jq -e '((.provider_name // "") | length > 0) or ((.provider_profile // "") | length > 0)' "${manifest_path}" >/dev/null || {
-      echo "wasm_model_v1 requires non-empty provider_name or provider_profile" >&2
+    jq -e '.capability_scopes.network_allow_hosts | type=="array" and length>0 and ([.[] | type=="string" and length>0] | all)' "${manifest_path}" >/dev/null || {
+      echo "wasm_model_v1 requires non-empty capability_scopes.network_allow_hosts" >&2
       return 1
     }
     jq -e '.model_name | type=="string" and length>0' "${manifest_path}" >/dev/null || {
@@ -546,7 +617,10 @@ validate_manifest_and_layout() {
 
 cmd_new() {
   local id="" name="" version="0.1.0" runtime="wasm_tool_v1" out="" tool_name=""
-  local provider_name="" provider_profile="" model_name="default" entrypoint="plugin.wasm" quality_tier="unsigned_local"
+  local provider_name="" provider_profile_id="" protocol_family="" api_key_env="" base_url_env=""
+  local default_base_url="" endpoint_path="" auth_header="" auth_scheme="bearer"
+  local model_name="default" entrypoint="plugin.wasm" quality_tier="unsigned_local"
+  local -a allow_hosts=()
 
   while [[ $# -gt 0 ]]; do
     case "$1" in
@@ -557,7 +631,15 @@ cmd_new() {
       --out) out="${2:?missing value for --out}"; shift 2 ;;
       --tool-name) tool_name="${2:?missing value for --tool-name}"; shift 2 ;;
       --provider-name) provider_name="${2:?missing value for --provider-name}"; shift 2 ;;
-      --provider-profile) provider_profile="${2:?missing value for --provider-profile}"; shift 2 ;;
+      --provider-profile) provider_profile_id="${2:?missing value for --provider-profile}"; shift 2 ;;
+      --protocol-family) protocol_family="${2:?missing value for --protocol-family}"; shift 2 ;;
+      --api-key-env) api_key_env="${2:?missing value for --api-key-env}"; shift 2 ;;
+      --base-url-env) base_url_env="${2:?missing value for --base-url-env}"; shift 2 ;;
+      --default-base-url) default_base_url="${2:?missing value for --default-base-url}"; shift 2 ;;
+      --endpoint-path) endpoint_path="${2:?missing value for --endpoint-path}"; shift 2 ;;
+      --auth-header) auth_header="${2:?missing value for --auth-header}"; shift 2 ;;
+      --auth-scheme) auth_scheme="${2:?missing value for --auth-scheme}"; shift 2 ;;
+      --allow-host) allow_hosts+=("${2:?missing value for --allow-host}"); shift 2 ;;
       --model-name) model_name="${2:?missing value for --model-name}"; shift 2 ;;
       --entrypoint) entrypoint="${2:?missing value for --entrypoint}"; shift 2 ;;
       --quality-tier) quality_tier="${2:?missing value for --quality-tier}"; shift 2 ;;
@@ -591,29 +673,102 @@ cmd_new() {
   if [[ -z "${tool_name}" ]]; then
     tool_name="$(tr '.-' '_' <<< "${id}")"
   fi
-  if [[ "${runtime}" == "wasm_model_v1" && -z "${provider_profile}" ]]; then
-    provider_profile="openai.responses"
-  fi
-  if [[ -z "${provider_name}" ]]; then
-    provider_name="$(provider_profile_default_provider_name "${provider_profile}" 2>/dev/null || tr '.-' '_' <<< "${id}")"
-  fi
 
   local capabilities runtime_extra network_allow_hosts timeout_ms crate_package_name crate_lib_name
   if [[ "${runtime}" == "wasm_model_v1" ]]; then
-    if [[ "${model_name}" == "default" ]]; then
-      model_name="$(provider_profile_default_model_name "${provider_profile}")"
+    local builtin_profile_json="" provider_profile_json=""
+    if [[ -z "${provider_profile_id}" ]]; then
+      provider_profile_id="openai.responses"
     fi
-    network_allow_hosts="$(provider_profile_default_hosts_json "${provider_profile}")"
+    builtin_profile_json="$(builtin_provider_profile_json "${provider_profile_id}" 2>/dev/null || true)"
+    if [[ -n "${builtin_profile_json}" ]]; then
+      [[ -n "${protocol_family}" ]] || protocol_family="$(jq -er '.protocol_family' <<< "${builtin_profile_json}")"
+      [[ -n "${provider_name}" ]] || provider_name="$(jq -er '.provider_name' <<< "${builtin_profile_json}")"
+      [[ -n "${api_key_env}" ]] || api_key_env="$(jq -er '.api_key_env' <<< "${builtin_profile_json}")"
+      [[ -n "${base_url_env}" ]] || base_url_env="$(jq -er '.base_url_env' <<< "${builtin_profile_json}")"
+      [[ -n "${default_base_url}" ]] || default_base_url="$(jq -er '.default_base_url' <<< "${builtin_profile_json}")"
+      [[ -n "${endpoint_path}" ]] || endpoint_path="$(jq -er '.endpoint_path' <<< "${builtin_profile_json}")"
+      [[ -n "${auth_header}" ]] || auth_header="$(jq -er '.auth_header' <<< "${builtin_profile_json}")"
+      [[ "${auth_scheme}" != "bearer" ]] || auth_scheme="$(jq -er '.auth_scheme' <<< "${builtin_profile_json}")"
+      if [[ "${#allow_hosts[@]}" -eq 0 ]]; then
+        mapfile -t allow_hosts < <(jq -r '.default_allow_hosts[]' <<< "${builtin_profile_json}")
+      fi
+    fi
+    [[ -n "${protocol_family}" ]] || {
+      echo "wasm_model_v1 requires --protocol-family for non-builtin provider profiles" >&2
+      exit 1
+    }
+    [[ -n "${provider_name}" ]] || provider_name="$(tr '.-' '_' <<< "${id}")"
+    [[ -n "${api_key_env}" ]] || {
+      echo "wasm_model_v1 requires --api-key-env" >&2
+      exit 1
+    }
+    [[ -n "${base_url_env}" ]] || {
+      echo "wasm_model_v1 requires --base-url-env" >&2
+      exit 1
+    }
+    [[ -n "${auth_header}" ]] || auth_header="authorization"
+    [[ -n "${default_base_url}" ]] || {
+      echo "wasm_model_v1 requires --default-base-url" >&2
+      exit 1
+    }
+    [[ -n "${endpoint_path}" ]] || {
+      echo "wasm_model_v1 requires --endpoint-path" >&2
+      exit 1
+    }
+    [[ "${auth_scheme}" == "bearer" || "${auth_scheme}" == "raw" ]] || {
+      echo "wasm_model_v1 --auth-scheme must be bearer or raw" >&2
+      exit 1
+    }
+    [[ "${#allow_hosts[@]}" -gt 0 ]] || {
+      echo "wasm_model_v1 requires at least one --allow-host (or a builtin profile default)" >&2
+      exit 1
+    }
+    if [[ "${model_name}" == "default" ]]; then
+      model_name="$(protocol_family_default_model_name "${protocol_family}" "${provider_name}")"
+    fi
+    network_allow_hosts="$(printf '%s\n' "${allow_hosts[@]}" | jq -R . | jq -s .)"
     timeout_ms="5000"
     capabilities='["model_provider","network_egress"]'
+    provider_profile_json="$(jq -cn \
+      --arg id "${provider_profile_id}" \
+      --arg provider_name "${provider_name}" \
+      --arg protocol_family "${protocol_family}" \
+      --arg api_key_env "${api_key_env}" \
+      --arg base_url_env "${base_url_env}" \
+      --arg default_base_url "${default_base_url}" \
+      --arg endpoint_path "${endpoint_path}" \
+      --arg auth_header "${auth_header}" \
+      --arg auth_scheme "${auth_scheme}" \
+      --argjson default_allow_hosts "${network_allow_hosts}" \
+      '{
+        id:$id,
+        provider_name:$provider_name,
+        protocol_family:$protocol_family,
+        api_key_env:$api_key_env,
+        base_url_env:$base_url_env,
+        default_base_url:$default_base_url,
+        endpoint_path:$endpoint_path,
+        auth_header:$auth_header,
+        auth_scheme:$auth_scheme,
+        static_headers:[],
+        default_allow_hosts:$default_allow_hosts
+      }')"
+    if [[ -n "${builtin_profile_json}" ]]; then
+      provider_profile_json="$(jq -cn \
+        --argjson builtin "${builtin_profile_json}" \
+        --argjson overrides "${provider_profile_json}" \
+        '$builtin * $overrides')"
+    fi
     runtime_extra="$(jq -cn \
       --arg provider_name "${provider_name}" \
-      --arg provider_profile "${provider_profile}" \
       --arg model_name "${model_name}" \
+      --argjson provider_profile "${provider_profile_json}" \
       '{
         provider_name:$provider_name,
+        provider_profile:$provider_profile,
         model_name:$model_name
-      } + (if $provider_profile == "" then {} else {provider_profile:$provider_profile} end)')"
+      }')"
   else
     network_allow_hosts='[]'
     timeout_ms="2000"

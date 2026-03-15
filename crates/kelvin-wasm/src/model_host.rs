@@ -5,7 +5,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kelvin_core::{
     KelvinError, KelvinResult, ModelInput, ModelProviderAuthScheme, ModelProviderProfile,
-    OPENAI_RESPONSES_PROFILE_ID,
+    ModelProviderProtocolFamily, OPENAI_RESPONSES_PROFILE_ID,
 };
 use serde_json::{json, Value};
 use url::Url;
@@ -152,11 +152,17 @@ fn normalize_provider_request(
         let selected_model = model_name
             .as_deref()
             .filter(|value| !value.trim().is_empty())
-            .unwrap_or_else(|| default_model_name_for_profile(profile));
-        match profile.id.as_str() {
-            OPENAI_RESPONSES_PROFILE_ID => model_input_to_openai_request(&input, selected_model),
-            "anthropic.messages" => model_input_to_anthropic_request(&input, selected_model),
-            _ => request,
+            .unwrap_or_else(|| profile.default_model_name());
+        match profile.protocol_family {
+            ModelProviderProtocolFamily::OpenAiResponses => {
+                model_input_to_openai_request(&input, selected_model)
+            }
+            ModelProviderProtocolFamily::AnthropicMessages => {
+                model_input_to_anthropic_request(&input, selected_model)
+            }
+            ModelProviderProtocolFamily::OpenAiChatCompletions => {
+                model_input_to_openai_chat_completions_request(&input, selected_model)
+            }
         }
     } else {
         request
@@ -170,14 +176,6 @@ fn normalize_provider_request(
 
 fn decode_model_input_request(request: &Value) -> Option<ModelInput> {
     serde_json::from_value(request.clone()).ok()
-}
-
-fn default_model_name_for_profile(profile: &ModelProviderProfile) -> &str {
-    match profile.id.as_str() {
-        OPENAI_RESPONSES_PROFILE_ID => "gpt-4.1-mini",
-        "anthropic.messages" => "claude-haiku-4-5-20251001",
-        _ => "default",
-    }
 }
 
 fn render_model_prompt(input: &ModelInput) -> String {
@@ -227,6 +225,25 @@ fn model_input_to_anthropic_request(input: &ModelInput, model_name: &str) -> Val
     }
 
     payload
+}
+
+fn model_input_to_openai_chat_completions_request(input: &ModelInput, model_name: &str) -> Value {
+    let mut messages = Vec::new();
+    if !input.system_prompt.trim().is_empty() {
+        messages.push(json!({
+            "role": "system",
+            "content": input.system_prompt
+        }));
+    }
+    messages.push(json!({
+        "role": "user",
+        "content": render_model_prompt(input)
+    }));
+
+    json!({
+        "model": model_name,
+        "messages": messages
+    })
 }
 
 fn normalize_openai_request(mut request: Value) -> Value {
@@ -781,8 +798,8 @@ mod tests {
         WasmModelHost,
     };
     use kelvin_core::{
-        KelvinError, KelvinResult, ModelProviderProfile, ANTHROPIC_MESSAGES_PROFILE_ID,
-        OPENAI_RESPONSES_PROFILE_ID,
+        KelvinError, KelvinResult, ModelProviderAuthScheme, ModelProviderProfile,
+        ModelProviderProtocolFamily, ANTHROPIC_MESSAGES_PROFILE_ID, OPENAI_RESPONSES_PROFILE_ID,
     };
     use serde_json::{json, Value};
     use std::sync::{Arc, Mutex};
@@ -880,6 +897,58 @@ mod tests {
         let content = normalized["messages"][0]["content"]
             .as_str()
             .expect("anthropic content string");
+        assert!(content.contains("Conversation history"));
+        assert!(content.contains("Relevant memory"));
+        assert!(content.contains("Explain KelvinClaw."));
+    }
+
+    #[test]
+    fn openrouter_request_normalization_builds_chat_completions_payload_from_model_input() {
+        let profile = ModelProviderProfile {
+            id: "openrouter.chat".to_string(),
+            provider_name: "openrouter".to_string(),
+            protocol_family: ModelProviderProtocolFamily::OpenAiChatCompletions,
+            api_key_env: "OPENROUTER_API_KEY".to_string(),
+            base_url_env: "OPENROUTER_BASE_URL".to_string(),
+            default_base_url: "https://openrouter.ai/api/v1".to_string(),
+            endpoint_path: "chat/completions".to_string(),
+            auth_header: "authorization".to_string(),
+            auth_scheme: ModelProviderAuthScheme::Bearer,
+            static_headers: Vec::new(),
+            default_allow_hosts: vec!["openrouter.ai".to_string()],
+        };
+        let normalized = normalize_provider_request(
+            &profile,
+            &Some("openai/gpt-4.1-mini".to_string()),
+            json!({
+                "run_id": "run-123",
+                "session_id": "session-456",
+                "system_prompt": "You are concise.",
+                "user_prompt": "Explain KelvinClaw.",
+                "memory_snippets": ["Project: KelvinClaw"],
+                "history": ["user: hello", "assistant: hi"]
+            }),
+        );
+
+        assert_eq!(
+            normalized["model"],
+            Value::String("openai/gpt-4.1-mini".to_string())
+        );
+        assert_eq!(
+            normalized["messages"][0]["role"],
+            Value::String("system".to_string())
+        );
+        assert_eq!(
+            normalized["messages"][0]["content"],
+            Value::String("You are concise.".to_string())
+        );
+        assert_eq!(
+            normalized["messages"][1]["role"],
+            Value::String("user".to_string())
+        );
+        let content = normalized["messages"][1]["content"]
+            .as_str()
+            .expect("openrouter content string");
         assert!(content.contains("Conversation history"));
         assert!(content.contains("Relevant memory"));
         assert!(content.contains("Explain KelvinClaw."));

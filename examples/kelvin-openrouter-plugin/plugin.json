@@ -1,0 +1,50 @@
+{
+  "id": "kelvin.openrouter",
+  "name": "Kelvin OpenRouter Model Plugin",
+  "version": "0.1.0",
+  "api_version": "1.0.0",
+  "description": "First-party OpenRouter model plugin using Kelvin's declarative provider_profile routing.",
+  "homepage": "https://github.com/agentichighway/kelvinclaw/tree/main/examples/kelvin-openrouter-plugin",
+  "capabilities": [
+    "model_provider",
+    "network_egress"
+  ],
+  "experimental": false,
+  "min_core_version": "0.1.0",
+  "max_core_version": null,
+  "runtime": "wasm_model_v1",
+  "provider_name": "openrouter",
+  "provider_profile": {
+    "id": "openrouter.chat",
+    "provider_name": "openrouter",
+    "protocol_family": "openai_chat_completions",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "base_url_env": "OPENROUTER_BASE_URL",
+    "default_base_url": "https://openrouter.ai/api/v1",
+    "endpoint_path": "chat/completions",
+    "auth_header": "authorization",
+    "auth_scheme": "bearer",
+    "static_headers": [],
+    "default_allow_hosts": [
+      "openrouter.ai"
+    ]
+  },
+  "model_name": "openai/gpt-4.1-mini",
+  "entrypoint": "plugin.wasm",
+  "entrypoint_sha256": "9014594e24a201aa59968cf5578f1272a3bc569046a42a3f1a4adb15568f8109",
+  "publisher": null,
+  "quality_tier": "unsigned_local",
+  "capability_scopes": {
+    "fs_read_paths": [],
+    "network_allow_hosts": [
+      "openrouter.ai"
+    ]
+  },
+  "operational_controls": {
+    "timeout_ms": 5000,
+    "max_retries": 0,
+    "max_calls_per_minute": 120,
+    "circuit_breaker_failures": 3,
+    "circuit_breaker_cooldown_ms": 30000
+  }
+}

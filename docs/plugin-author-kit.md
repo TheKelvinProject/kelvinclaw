@@ -63,11 +63,15 @@ Reference templates:
 - `templates/plugin-author-kit/wasm_tool/plugin.json.template`
 - `templates/plugin-author-kit/wasm_model/plugin.json.template`
 
-For new model plugins, prefer the generic host-routed `provider_profile` field (`openai.responses`, `anthropic.messages`) instead of the legacy provider-specific host import.
+For new model plugins, prefer the generic host-routed `provider_profile` object
+instead of the legacy provider-specific host import. The profile object declares
+the provider id, protocol family, auth env vars, base URL, endpoint path, and
+default allowlist hosts.
 
 The maintained example source crate is:
 
 - `examples/kelvin-anthropic-plugin`
+- `examples/kelvin-openrouter-plugin`
 
 Use the example in Docker with:
 

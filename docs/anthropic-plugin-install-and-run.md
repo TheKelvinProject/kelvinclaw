@@ -47,7 +47,7 @@ Expected behavior:
 - runtime loads installed plugins through signature + manifest checks
 - model provider is selected explicitly by plugin id (`kelvin.anthropic`)
 - request executes through the generic `provider_profile_call` guest ABI
-- host resolves the `anthropic.messages` provider profile and performs the HTTPS call
+- host resolves the declarative `anthropic.messages` provider profile object and performs the HTTPS call
 
 ## Failure Modes
 

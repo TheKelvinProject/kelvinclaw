@@ -1,6 +1,7 @@
 # Model Plugin ABI (`wasm_model_v1`)
 
-This document defines the v1 ABI and runtime contract for installed WASM model-provider plugins.
+This document defines the v1 ABI and runtime contract for installed WASM
+model-provider plugins.
 
 ## Runtime Kind
 
@@ -8,14 +9,35 @@ This document defines the v1 ABI and runtime contract for installed WASM model-p
 - Manifest `capabilities` must include `model_provider`.
 - Manifest must include:
   - `entrypoint`
-  - `provider_name` or `provider_profile`
+  - `provider_profile`
   - `model_name`
   - `capability_scopes.network_allow_hosts` (non-empty for model runtime)
 
 Recommended manifest fields for new plugins:
 
-- `provider_profile`: host-enforced profile id (`openai.responses`, `anthropic.messages`)
-- `provider_name`: optional when it matches the selected profile
+- `provider_name`: should match `provider_profile.provider_name`
+- `provider_profile`: structured declarative object
+
+Example:
+
+```json
+{
+  "provider_name": "openrouter",
+  "provider_profile": {
+    "id": "openrouter.chat",
+    "provider_name": "openrouter",
+    "protocol_family": "openai_chat_completions",
+    "api_key_env": "OPENROUTER_API_KEY",
+    "base_url_env": "OPENROUTER_BASE_URL",
+    "default_base_url": "https://openrouter.ai/api/v1",
+    "endpoint_path": "chat/completions",
+    "auth_header": "authorization",
+    "auth_scheme": "bearer",
+    "static_headers": [],
+    "default_allow_hosts": ["openrouter.ai"]
+  }
+}
+```
 
 ## Guest Exports
 
@@ -84,32 +106,34 @@ The host executes HTTPS calls; guest code never opens raw sockets.
 
 ## Provider Profile Host Call
 
-`provider_profile_call` is implemented by the trusted host and resolves the outbound provider from the plugin manifest's `provider_profile`.
+`provider_profile_call` is implemented by the trusted host and resolves the
+outbound provider from the plugin manifest's `provider_profile`.
 
-Built-in host-enforced profiles:
+The host routes requests by `provider_profile.protocol_family`, not by a
+hardcoded provider name. Initial supported protocol families:
 
-- `openai.responses`
+- `openai_responses`
   - endpoint: `POST /v1/responses`
-  - key source: `OPENAI_API_KEY`
-  - base URL override: `OPENAI_BASE_URL`
-  - default allowlist host: `api.openai.com`
-- `anthropic.messages`
+- typical providers: OpenAI
+- `anthropic_messages`
   - endpoint: `POST /v1/messages`
-  - key source: `ANTHROPIC_API_KEY`
-  - base URL override: `ANTHROPIC_BASE_URL`
-  - default allowlist host: `api.anthropic.com`
-  - fixed header: `anthropic-version: 2023-06-01`
+  - fixed header example: `anthropic-version: 2023-06-01`
+  - typical providers: Anthropic
+- `openai_chat_completions`
+  - endpoint shape: `POST .../chat/completions`
+  - typical providers: OpenRouter and OpenAI-compatible chat providers
 
-The guest passes provider-specific JSON request payloads; the host supplies auth, endpoint selection, and host allowlist enforcement.
+The guest passes `ModelInput` JSON through the public ABI. The host normalizes
+that into the selected protocol-family request shape, injects auth, resolves the
+endpoint, and enforces the host allowlist.
 
 ## Legacy OpenAI Host Call
 
-`openai_responses_call` remains available for legacy `wasm_model_v1` plugins:
+`openai_responses_call` remains available for compatibility-only plugins:
 
 - endpoint: `POST /v1/responses`
-- key source: `OPENAI_API_KEY` (required)
-- base URL override: `OPENAI_BASE_URL` (optional, still allowlist-checked)
-- default allowlist host: `api.openai.com`
+- the plugin manifest still must declare a structured `provider_profile`
+- the profile must use `protocol_family: openai_responses`
 
 Secrets are not emitted in logs/errors.
 

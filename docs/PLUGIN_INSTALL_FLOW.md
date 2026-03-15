@@ -53,6 +53,12 @@ Install Kelvin's first-party OpenAI model plugin package:
 scripts/install-kelvin-openai-plugin.sh
 ```
 
+Install Kelvin's first-party OpenRouter model plugin package:
+
+```bash
+scripts/install-kelvin-openrouter-plugin.sh
+```
+
 Install optional browser automation plugin profile:
 
 ```bash
