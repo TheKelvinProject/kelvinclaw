@@ -46,16 +46,10 @@ jobs:
           toolchain: stable
 
       - name: Restore Rust cache
-        uses: useblacksmith/cache@71c7c918062ba3861252d84b07fe5ab2a6b467a6
+        uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/releases
-          key: release-rust-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'apps/**/Cargo.toml', 'crates/**/Cargo.toml') }}
-          restore-keys: |
-            release-rust-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-
-            release-rust-${{ runner.os }}-${{ runner.arch }}-
+          workspaces: . -> target/releases
+          key: release-${{ matrix.target }}
 
       - name: Resolve release version
         shell: bash
@@ -168,16 +162,10 @@ jobs:
           toolchain: stable
 
       - name: Restore Rust cache
-        uses: useblacksmith/cache@71c7c918062ba3861252d84b07fe5ab2a6b467a6
+        uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target/releases
-          key: release-rust-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'apps/**/Cargo.toml', 'crates/**/Cargo.toml') }}
-          restore-keys: |
-            release-rust-${{ runner.os }}-${{ runner.arch }}-${{ matrix.target }}-
-            release-rust-${{ runner.os }}-${{ runner.arch }}-
+          workspaces: . -> target/releases
+          key: release-${{ matrix.target }}
 
       - name: Resolve release version
         shell: pwsh

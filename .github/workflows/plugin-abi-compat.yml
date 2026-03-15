@@ -30,16 +30,10 @@ jobs:
           toolchain: stable
 
       - name: Restore Rust cache
-        uses: useblacksmith/cache@71c7c918062ba3861252d84b07fe5ab2a6b467a6
+        uses: useblacksmith/rust-cache@f53e7f127245d2a269b3d90879ccf259876842d5
         with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            target
-          key: rust-${{ github.workflow }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.plugin }}-${{ hashFiles('Cargo.lock', 'Cargo.toml', 'apps/**/Cargo.toml', 'crates/**/Cargo.toml') }}
-          restore-keys: |
-            rust-${{ github.workflow }}-${{ runner.os }}-${{ runner.arch }}-${{ matrix.plugin }}-
-            rust-${{ github.workflow }}-${{ runner.os }}-${{ runner.arch }}-
+          workspaces: . -> target
+          key: plugin-abi-${{ matrix.plugin }}
 
       - name: Install Rust components
         run: rustup component add rustfmt clippy
