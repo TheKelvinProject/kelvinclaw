@@ -15,8 +15,8 @@
   "tool_name": "acme_echo",
   "entrypoint": "plugin.wasm",
   "entrypoint_sha256": null,
-  "publisher": "acme",
-  "quality_tier": "signed_community",
+  "publisher": null,
+  "quality_tier": "unsigned_local",
   "capability_scopes": {
     "fs_read_paths": [],
     "network_allow_hosts": []

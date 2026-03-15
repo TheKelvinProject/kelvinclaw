@@ -4,7 +4,7 @@ use std::sync::Arc;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use kelvin_core::{
-    KelvinError, KelvinResult, ModelProviderAuthScheme, ModelProviderProfile,
+    KelvinError, KelvinResult, ModelInput, ModelProviderAuthScheme, ModelProviderProfile,
     OPENAI_RESPONSES_PROFILE_ID,
 };
 use serde_json::{json, Value};
@@ -39,6 +39,7 @@ pub struct ModelSandboxPolicy {
     pub fuel_budget: u64,
     pub timeout_ms: u64,
     pub provider_profile: Option<ModelProviderProfile>,
+    pub model_name: Option<String>,
 }
 
 impl Default for ModelSandboxPolicy {
@@ -51,6 +52,7 @@ impl Default for ModelSandboxPolicy {
             fuel_budget: super::DEFAULT_FUEL_BUDGET,
             timeout_ms: DEFAULT_TIMEOUT_MS,
             provider_profile: None,
+            model_name: None,
         }
     }
 }
@@ -76,7 +78,7 @@ impl OpenAiResponsesTransport for EnvProviderProfileTransport {
         request: Value,
         policy: &ModelSandboxPolicy,
     ) -> KelvinResult<String> {
-        let request = normalize_provider_request(profile, request);
+        let request = normalize_provider_request(profile, &policy.model_name, request);
         let endpoint = provider_endpoint(profile)?;
         let host = endpoint.host_str().ok_or_else(|| {
             KelvinError::InvalidInput(format!("{} endpoint is missing host", profile.id))
@@ -141,11 +143,90 @@ impl OpenAiResponsesTransport for EnvProviderProfileTransport {
     }
 }
 
-fn normalize_provider_request(profile: &ModelProviderProfile, request: Value) -> Value {
+fn normalize_provider_request(
+    profile: &ModelProviderProfile,
+    model_name: &Option<String>,
+    request: Value,
+) -> Value {
+    let request = if let Some(input) = decode_model_input_request(&request) {
+        let selected_model = model_name
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+            .unwrap_or_else(|| default_model_name_for_profile(profile));
+        match profile.id.as_str() {
+            OPENAI_RESPONSES_PROFILE_ID => model_input_to_openai_request(&input, selected_model),
+            "anthropic.messages" => model_input_to_anthropic_request(&input, selected_model),
+            _ => request,
+        }
+    } else {
+        request
+    };
+
     if profile.id == OPENAI_RESPONSES_PROFILE_ID {
         return normalize_openai_request(request);
     }
     request
+}
+
+fn decode_model_input_request(request: &Value) -> Option<ModelInput> {
+    serde_json::from_value(request.clone()).ok()
+}
+
+fn default_model_name_for_profile(profile: &ModelProviderProfile) -> &str {
+    match profile.id.as_str() {
+        OPENAI_RESPONSES_PROFILE_ID => "gpt-4.1-mini",
+        "anthropic.messages" => "claude-haiku-4-5-20251001",
+        _ => "default",
+    }
+}
+
+fn render_model_prompt(input: &ModelInput) -> String {
+    let mut sections = Vec::new();
+    if !input.history.is_empty() {
+        sections.push(format!(
+            "Conversation history:\n{}",
+            input.history.join("\n")
+        ));
+    }
+    if !input.memory_snippets.is_empty() {
+        sections.push(format!(
+            "Relevant memory:\n{}",
+            input.memory_snippets.join("\n")
+        ));
+    }
+    sections.push(format!("User request:\n{}", input.user_prompt));
+    sections.join("\n\n")
+}
+
+fn model_input_to_openai_request(input: &ModelInput, model_name: &str) -> Value {
+    json!({
+        "model": model_name,
+        "instructions": input.system_prompt,
+        "input": render_model_prompt(input),
+        "metadata": {
+            "run_id": input.run_id,
+            "session_id": input.session_id
+        }
+    })
+}
+
+fn model_input_to_anthropic_request(input: &ModelInput, model_name: &str) -> Value {
+    let mut payload = json!({
+        "model": model_name,
+        "max_tokens": 1024,
+        "messages": [
+            {
+                "role": "user",
+                "content": render_model_prompt(input)
+            }
+        ]
+    });
+
+    if !input.system_prompt.trim().is_empty() {
+        payload["system"] = Value::String(input.system_prompt.clone());
+    }
+
+    payload
 }
 
 fn normalize_openai_request(mut request: Value) -> Value {
@@ -736,6 +817,7 @@ mod tests {
             .expect("openai profile should resolve");
         let normalized = normalize_provider_request(
             &profile,
+            &Some("gpt-4.1-mini".to_string()),
             json!({
                 "model": "gpt-4.1-mini",
                 "metadata": {
@@ -763,6 +845,44 @@ mod tests {
             normalized["metadata"]["nested"],
             Value::String("{\"key\":\"value\"}".to_string())
         );
+    }
+
+    #[test]
+    fn anthropic_request_normalization_builds_messages_payload_from_model_input() {
+        let profile = ModelProviderProfile::builtin(ANTHROPIC_MESSAGES_PROFILE_ID)
+            .expect("anthropic profile should resolve");
+        let normalized = normalize_provider_request(
+            &profile,
+            &Some("claude-haiku-4-5-20251001".to_string()),
+            json!({
+                "run_id": "run-123",
+                "session_id": "session-456",
+                "system_prompt": "You are concise.",
+                "user_prompt": "Explain KelvinClaw.",
+                "memory_snippets": ["Project: KelvinClaw"],
+                "history": ["user: hello", "assistant: hi"]
+            }),
+        );
+
+        assert_eq!(
+            normalized["model"],
+            Value::String("claude-haiku-4-5-20251001".to_string())
+        );
+        assert_eq!(normalized["max_tokens"], Value::from(1024));
+        assert_eq!(
+            normalized["system"],
+            Value::String("You are concise.".to_string())
+        );
+        assert_eq!(
+            normalized["messages"][0]["role"],
+            Value::String("user".to_string())
+        );
+        let content = normalized["messages"][0]["content"]
+            .as_str()
+            .expect("anthropic content string");
+        assert!(content.contains("Conversation history"));
+        assert!(content.contains("Relevant memory"));
+        assert!(content.contains("Explain KelvinClaw."));
     }
 
     fn legacy_test_module() -> Vec<u8> {

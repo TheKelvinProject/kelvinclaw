@@ -127,6 +127,8 @@ PLUGIN_VERSION="$(manifest_get '.version')"
 API_VERSION="$(manifest_get '.api_version')"
 ENTRYPOINT_REL="$(manifest_get '.entrypoint')"
 CAPS_COUNT="$(manifest_get '.capabilities | length')"
+QUALITY_TIER="$(jq -r '.quality_tier // "unsigned_local"' "${MANIFEST_PATH}")"
+PUBLISHER_ID="$(jq -r '.publisher // empty' "${MANIFEST_PATH}")"
 
 if [[ "${CAPS_COUNT}" -lt 1 ]]; then
   echo "Invalid plugin.json: capabilities must contain at least one entry" >&2
@@ -152,6 +154,17 @@ if [[ -n "${EXPECTED_SHA}" ]]; then
     exit 1
   fi
 fi
+
+case "${QUALITY_TIER}" in
+  unsigned_local)
+    echo "WARNING: installing unsigned_local plugin '${PLUGIN_ID}@${PLUGIN_VERSION}'." >&2
+    echo "         This package is not signature-verified and should be treated as local development content." >&2
+    ;;
+  signed_community)
+    echo "WARNING: installing signed_community plugin '${PLUGIN_ID}@${PLUGIN_VERSION}' from publisher '${PUBLISHER_ID:-unknown}'." >&2
+    echo "         Signature trust is enforced later by Kelvin runtime policy, not by this installer alone." >&2
+    ;;
+esac
 
 INSTALL_DIR="${PLUGIN_HOME}/${PLUGIN_ID}/${PLUGIN_VERSION}"
 CURRENT_LINK="${PLUGIN_HOME}/${PLUGIN_ID}/current"

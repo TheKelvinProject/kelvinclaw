@@ -66,7 +66,9 @@ JSON
 PACKAGE_TARBALL="${DIST_DIR}/acme.echo-1.0.0.tar.gz"
 tar -czf "${PACKAGE_TARBALL}" -C "${PACKAGE_DIR}" .
 
-KELVIN_PLUGIN_HOME="${PLUGIN_HOME}" "${INSTALLER}" --package "${PACKAGE_TARBALL}" >/dev/null
+INSTALL_STDERR="${WORK_DIR}/install-stderr.txt"
+KELVIN_PLUGIN_HOME="${PLUGIN_HOME}" "${INSTALLER}" --package "${PACKAGE_TARBALL}" >/dev/null 2>"${INSTALL_STDERR}"
+grep -q "WARNING: installing unsigned_local plugin 'acme.echo@1.0.0'" "${INSTALL_STDERR}"
 
 INSTALLED_MANIFEST="${PLUGIN_HOME}/acme.echo/1.0.0/plugin.json"
 INSTALLED_ENTRYPOINT="${PLUGIN_HOME}/acme.echo/1.0.0/payload/echo.wasm"

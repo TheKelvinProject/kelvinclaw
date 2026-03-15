@@ -65,6 +65,10 @@ Generic package install:
 scripts/plugin-install.sh --package ./dist/acme.echo-1.0.0.tar.gz
 ```
 
+`unsigned_local` and `signed_community` packages are still installable. Kelvin
+prints a warning so community authors can develop locally without access to the
+first-party signing platform.
+
 Install from remote plugin index:
 
 ```bash
