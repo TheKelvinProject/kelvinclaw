@@ -36,9 +36,9 @@ scripts/verify-onboarding.sh --track wasm
 scripts/verify-onboarding.sh --track daily
 ```
 
-## Linux Release Executables
+## Release Executables
 
-Tagged releases publish Linux executable bundles for:
+Tagged releases publish executable bundles for:
 
 - `kelvin-host`
 - `kelvin-gateway`
@@ -46,9 +46,19 @@ Tagged releases publish Linux executable bundles for:
 - `kelvin-registry`
 - top-level `./kelvin` launcher
 
-The release workflow is backed by Blacksmith runners and produces native
-`linux-x86_64` and `linux-arm64` tarballs with matching SHA-256 files.
-The intended end-user entrypoint is:
+The release workflow produces:
+
+- `linux-x86_64` and `linux-arm64` tarballs
+- `amd64` and `arm64` Debian packages
+- `macos-x86_64` and `macos-arm64` tarballs
+- `windows-x86_64` zip bundles
+- matching SHA-256 files for every artifact
+
+Linux and Windows builds run on Blacksmith runners. macOS builds run on
+GitHub-hosted macOS runners. macOS artifacts are intentionally unsigned and
+unnotarized in this phase.
+
+The intended Unix end-user entrypoint is:
 
 ```bash
 tar -xzf kelvinclaw-<version>-linux-<arch>.tar.gz
@@ -57,8 +67,10 @@ cd kelvinclaw-<version>-linux-<arch>
 ```
 
 On first run, `./kelvin` fetches the required official first-party plugins into
-`~/.kelvinclaw`, then starts Kelvin. For manual validation without publishing a GitHub Release, run the
-`Release Linux Executables` workflow with `workflow_dispatch`.
+`~/.kelvinclaw`, then starts Kelvin. Windows bundles ship `kelvin.cmd` and
+`kelvin.ps1` at the archive root. For manual validation without publishing a
+GitHub Release, run the `Release Executables` workflow with
+`workflow_dispatch`.
 
 Release prerequisites:
 
