@@ -39,11 +39,11 @@ Example for Linux arm64:
 
 ```bash
 apt-get update && apt-get install -y curl ca-certificates
-curl -fsSL -O https://github.com/AgenticHighway/kelvinclaw/releases/download/v0.1.6/kelvinclaw-0.1.6-linux-arm64.tar.gz
-curl -fsSL -O https://github.com/AgenticHighway/kelvinclaw/releases/download/v0.1.6/kelvinclaw-0.1.6-linux-arm64.tar.gz.sha256
-sha256sum -c kelvinclaw-0.1.6-linux-arm64.tar.gz.sha256
-tar -xzf kelvinclaw-0.1.6-linux-arm64.tar.gz
-cd kelvinclaw-0.1.6-linux-arm64
+curl -fsSL -O https://github.com/AgenticHighway/kelvinclaw/releases/download/v0.1.7/kelvinclaw-0.1.7-linux-arm64.tar.gz
+curl -fsSL -O https://github.com/AgenticHighway/kelvinclaw/releases/download/v0.1.7/kelvinclaw-0.1.7-linux-arm64.tar.gz.sha256
+sha256sum -c kelvinclaw-0.1.7-linux-arm64.tar.gz.sha256
+tar -xzf kelvinclaw-0.1.7-linux-arm64.tar.gz
+cd kelvinclaw-0.1.7-linux-arm64
 printf 'OPENAI_API_KEY=%s\n' '<your_key>' > .env
 ./kelvin
 ```
@@ -52,11 +52,11 @@ Example for Linux x86_64:
 
 ```bash
 apt-get update && apt-get install -y curl ca-certificates
-curl -fsSL -O https://github.com/AgenticHighway/kelvinclaw/releases/download/v0.1.6/kelvinclaw-0.1.6-linux-x86_64.tar.gz
-curl -fsSL -O https://github.com/AgenticHighway/kelvinclaw/releases/download/v0.1.6/kelvinclaw-0.1.6-linux-x86_64.tar.gz.sha256
-sha256sum -c kelvinclaw-0.1.6-linux-x86_64.tar.gz.sha256
-tar -xzf kelvinclaw-0.1.6-linux-x86_64.tar.gz
-cd kelvinclaw-0.1.6-linux-x86_64
+curl -fsSL -O https://github.com/AgenticHighway/kelvinclaw/releases/download/v0.1.7/kelvinclaw-0.1.7-linux-x86_64.tar.gz
+curl -fsSL -O https://github.com/AgenticHighway/kelvinclaw/releases/download/v0.1.7/kelvinclaw-0.1.7-linux-x86_64.tar.gz.sha256
+sha256sum -c kelvinclaw-0.1.7-linux-x86_64.tar.gz.sha256
+tar -xzf kelvinclaw-0.1.7-linux-x86_64.tar.gz
+cd kelvinclaw-0.1.7-linux-x86_64
 printf 'OPENAI_API_KEY=%s\n' '<your_key>' > .env
 ./kelvin
 ```

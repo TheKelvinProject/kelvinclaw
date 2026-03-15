@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: Optional release version label (for example 0.1.3 or v0.1.3)
+        description: Optional release version label (for example 0.1.7 or v0.1.7)
         required: false
         type: string
   push:
