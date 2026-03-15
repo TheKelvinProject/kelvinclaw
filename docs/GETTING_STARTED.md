@@ -5,14 +5,14 @@ Each track has a verification command so the setup can be validated immediately.
 
 ## Release Quickstart (Validated Public Onboarding)
 
-Use this if you want the fastest path from a public release tarball to a real
+Use this if you want the fastest path from a public release bundle to a real
 OpenAI-backed run.
 
 Validated path:
 
 - fresh `ubuntu:24.04`
 - install `curl` and `ca-certificates`
-- download the public GitHub Release tarball
+- download the public GitHub Release bundle
 - put `OPENAI_API_KEY` in `./.env`
 - run `./kelvin`
 
@@ -22,6 +22,14 @@ Prerequisites:
 - `tar`
 - `awk`
 - `ca-certificates` on minimal Linux images
+
+Release artifact types:
+
+- Linux: `.tar.gz` bundles and `.deb` packages
+- macOS: `.tar.gz` bundles
+- Windows: `.zip` bundles
+
+The fully validated onboarding flow today is Linux-based.
 
 Example for Linux arm64:
 
