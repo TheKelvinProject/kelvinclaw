@@ -2,7 +2,7 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-use crate::KelvinResult;
+use crate::{KelvinError, KelvinResult};
 
 pub const OPENAI_RESPONSES_PROFILE_ID: &str = "openai.responses";
 pub const ANTHROPIC_MESSAGES_PROFILE_ID: &str = "anthropic.messages";
@@ -47,15 +47,28 @@ pub enum ModelProviderAuthScheme {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum ModelProviderProtocolFamily {
+    #[serde(rename = "openai_responses")]
+    OpenAiResponses,
+    #[serde(rename = "openai_chat_completions")]
+    OpenAiChatCompletions,
+    #[serde(rename = "anthropic_messages")]
+    AnthropicMessages,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ModelProviderHeader {
     pub name: String,
     pub value: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(deny_unknown_fields)]
 pub struct ModelProviderProfile {
     pub id: String,
     pub provider_name: String,
+    pub protocol_family: ModelProviderProtocolFamily,
     pub api_key_env: String,
     pub base_url_env: String,
     pub default_base_url: String,
@@ -67,11 +80,39 @@ pub struct ModelProviderProfile {
 }
 
 impl ModelProviderProfile {
+    pub fn validate(&self) -> KelvinResult<()> {
+        validate_identifier("provider_profile.id", &self.id)?;
+        validate_identifier("provider_profile.provider_name", &self.provider_name)?;
+        validate_identifier("provider_profile.api_key_env", &self.api_key_env)?;
+        validate_identifier("provider_profile.base_url_env", &self.base_url_env)?;
+        validate_header_name("provider_profile.auth_header", &self.auth_header)?;
+        validate_http_url("provider_profile.default_base_url", &self.default_base_url)?;
+        validate_endpoint_path(&self.endpoint_path)?;
+        if self.default_allow_hosts.is_empty() {
+            return Err(KelvinError::InvalidInput(
+                "provider_profile.default_allow_hosts must not be empty".to_string(),
+            ));
+        }
+        for host in &self.default_allow_hosts {
+            validate_host_pattern(host)?;
+        }
+        for header in &self.static_headers {
+            validate_header_name("provider_profile.static_headers[].name", &header.name)?;
+            if header.value.trim().is_empty() {
+                return Err(KelvinError::InvalidInput(
+                    "provider_profile.static_headers[].value must not be empty".to_string(),
+                ));
+            }
+        }
+        Ok(())
+    }
+
     pub fn builtin(id: &str) -> Option<Self> {
-        match id.trim() {
-            OPENAI_RESPONSES_PROFILE_ID => Some(Self {
+        let profile = match id.trim() {
+            OPENAI_RESPONSES_PROFILE_ID => Self {
                 id: OPENAI_RESPONSES_PROFILE_ID.to_string(),
                 provider_name: "openai".to_string(),
+                protocol_family: ModelProviderProtocolFamily::OpenAiResponses,
                 api_key_env: "OPENAI_API_KEY".to_string(),
                 base_url_env: "OPENAI_BASE_URL".to_string(),
                 default_base_url: "https://api.openai.com".to_string(),
@@ -80,10 +121,11 @@ impl ModelProviderProfile {
                 auth_scheme: ModelProviderAuthScheme::Bearer,
                 static_headers: Vec::new(),
                 default_allow_hosts: vec!["api.openai.com".to_string()],
-            }),
-            ANTHROPIC_MESSAGES_PROFILE_ID => Some(Self {
+            },
+            ANTHROPIC_MESSAGES_PROFILE_ID => Self {
                 id: ANTHROPIC_MESSAGES_PROFILE_ID.to_string(),
                 provider_name: "anthropic".to_string(),
+                protocol_family: ModelProviderProtocolFamily::AnthropicMessages,
                 api_key_env: "ANTHROPIC_API_KEY".to_string(),
                 base_url_env: "ANTHROPIC_BASE_URL".to_string(),
                 default_base_url: "https://api.anthropic.com".to_string(),
@@ -95,10 +137,113 @@ impl ModelProviderProfile {
                     value: "2023-06-01".to_string(),
                 }],
                 default_allow_hosts: vec!["api.anthropic.com".to_string()],
-            }),
-            _ => None,
+            },
+            _ => return None,
+        };
+        Some(profile)
+    }
+
+    pub fn default_model_name(&self) -> &'static str {
+        match self.protocol_family {
+            ModelProviderProtocolFamily::OpenAiResponses => "gpt-4.1-mini",
+            ModelProviderProtocolFamily::OpenAiChatCompletions => {
+                if self.provider_name == "openrouter" {
+                    "openai/gpt-4.1-mini"
+                } else {
+                    "default"
+                }
+            }
+            ModelProviderProtocolFamily::AnthropicMessages => "claude-haiku-4-5-20251001",
         }
     }
+}
+
+fn validate_identifier(label: &str, value: &str) -> KelvinResult<()> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not be empty"
+        )));
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-' | '.'))
+    {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} has invalid characters: {value}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_header_name(label: &str, value: &str) -> KelvinResult<()> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not be empty"
+        )));
+    }
+    if !value
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '-' | '_'))
+    {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} has invalid characters: {value}"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_http_url(label: &str, value: &str) -> KelvinResult<()> {
+    let value = value.trim();
+    if !(value.starts_with("https://") || value.starts_with("http://")) {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must start with http:// or https://"
+        )));
+    }
+    if value.contains(char::is_whitespace) {
+        return Err(KelvinError::InvalidInput(format!(
+            "{label} must not contain whitespace"
+        )));
+    }
+    Ok(())
+}
+
+fn validate_endpoint_path(value: &str) -> KelvinResult<()> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(KelvinError::InvalidInput(
+            "provider_profile.endpoint_path must not be empty".to_string(),
+        ));
+    }
+    if value.starts_with('/') || value.contains("..") {
+        return Err(KelvinError::InvalidInput(
+            "provider_profile.endpoint_path must be a safe relative path".to_string(),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_host_pattern(value: &str) -> KelvinResult<()> {
+    let value = value.trim();
+    if value.is_empty() {
+        return Err(KelvinError::InvalidInput(
+            "provider_profile.default_allow_hosts entries must not be empty".to_string(),
+        ));
+    }
+    if value == "*" {
+        return Ok(());
+    }
+    let candidate = value.strip_prefix("*.").unwrap_or(value);
+    if !candidate
+        .chars()
+        .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '.' | '-'))
+    {
+        return Err(KelvinError::InvalidInput(format!(
+            "provider_profile.default_allow_hosts has invalid host pattern: {value}"
+        )));
+    }
+    Ok(())
 }
 
 #[async_trait]
@@ -113,8 +258,8 @@ pub trait ModelProvider: Send + Sync {
 #[cfg(test)]
 mod tests {
     use super::{
-        ModelProviderAuthScheme, ModelProviderProfile, ANTHROPIC_MESSAGES_PROFILE_ID,
-        OPENAI_RESPONSES_PROFILE_ID,
+        ModelProviderAuthScheme, ModelProviderProfile, ModelProviderProtocolFamily,
+        ANTHROPIC_MESSAGES_PROFILE_ID, OPENAI_RESPONSES_PROFILE_ID,
     };
 
     #[test]
@@ -123,12 +268,24 @@ mod tests {
             .expect("openai profile should resolve");
         assert_eq!(openai.provider_name, "openai");
         assert_eq!(openai.auth_scheme, ModelProviderAuthScheme::Bearer);
+        assert_eq!(
+            openai.protocol_family,
+            ModelProviderProtocolFamily::OpenAiResponses
+        );
         assert_eq!(openai.default_allow_hosts, vec!["api.openai.com"]);
+        openai.validate().expect("openai profile should validate");
 
         let anthropic = ModelProviderProfile::builtin(ANTHROPIC_MESSAGES_PROFILE_ID)
             .expect("anthropic profile should resolve");
         assert_eq!(anthropic.provider_name, "anthropic");
         assert_eq!(anthropic.auth_scheme, ModelProviderAuthScheme::Raw);
+        assert_eq!(
+            anthropic.protocol_family,
+            ModelProviderProtocolFamily::AnthropicMessages
+        );
         assert_eq!(anthropic.default_allow_hosts, vec!["api.anthropic.com"]);
+        anthropic
+            .validate()
+            .expect("anthropic profile should validate");
     }
 }

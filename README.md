@@ -85,6 +85,9 @@ bootstrapped first-party packages are:
 - `kelvin.cli@0.1.1`
 - `kelvin.openai@0.1.1` when `OPENAI_API_KEY` is available
 
+Additional published first-party model plugins can be installed explicitly from
+the plugin index, including `kelvin.anthropic` and `kelvin.openrouter`.
+
 Windows bundles ship `kelvin.cmd` and `kelvin.ps1` at the archive root. For
 manual validation without publishing a GitHub Release, run the `Release
 Executables` workflow with `workflow_dispatch`.
@@ -148,6 +151,7 @@ See:
 - [docs/channel-plugin-abi.md](docs/channel-plugin-abi.md)
 - [docs/openai-plugin-install-and-run.md](docs/openai-plugin-install-and-run.md)
 - [docs/anthropic-plugin-install-and-run.md](docs/anthropic-plugin-install-and-run.md)
+- [docs/openrouter-plugin-install-and-run.md](docs/openrouter-plugin-install-and-run.md)
 - [docs/runtime-container-first-run.md](docs/runtime-container-first-run.md)
 - [docs/plugin-index-schema.md](docs/plugin-index-schema.md)
 - [docs/toolpack-sdk-plugins.md](docs/toolpack-sdk-plugins.md)
@@ -199,6 +203,7 @@ The runtime integrates through the Kelvin Core SDK path:
 - `kelvin_cli` (CLI plugin executed before each run)
 - `kelvin.openai` (first-party OpenAI model plugin, optional)
 - `kelvin.anthropic` (first-party Anthropic model plugin)
+- `kelvin.openrouter` (first-party OpenRouter model plugin)
 - Kelvin Core tool-pack plugins (`fs_safe_read`, `fs_safe_write`, `web_fetch_safe`, `schedule_cron`, `session_tools`)
 
 ## Trusted Executive + Untrusted Skills
@@ -553,6 +558,24 @@ kelvin plugin verify --package ./dist/acme.anthropic-0.1.0.tar.gz
 
 Community/local plugins can stay `unsigned_local`. Kelvin warns on install, but
 still allows them to load from a local plugin home.
+
+For declarative providers on the OpenAI-compatible chat-completions family:
+
+```bash
+kelvin plugin new \
+  --id acme.openrouter \
+  --name "Acme OpenRouter" \
+  --runtime wasm_model_v1 \
+  --provider-name openrouter \
+  --provider-profile openrouter.chat \
+  --protocol-family openai_chat_completions \
+  --api-key-env OPENROUTER_API_KEY \
+  --base-url-env OPENROUTER_BASE_URL \
+  --default-base-url https://openrouter.ai/api/v1 \
+  --endpoint-path chat/completions \
+  --allow-host openrouter.ai \
+  --model-name openai/gpt-4.1-mini
+```
 
 Authoring docs:
 

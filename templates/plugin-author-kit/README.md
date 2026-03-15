@@ -14,6 +14,7 @@ scripts/kelvin-plugin.sh verify --package ./plugin-acme.echo/dist/acme.echo-0.1.
 For working model-plugin source, also see:
 
 - `examples/kelvin-anthropic-plugin`
+- `examples/kelvin-openrouter-plugin`
 - `docs/build-a-model-plugin.md`
 
 Template manifests:
@@ -21,7 +22,9 @@ Template manifests:
 - `wasm_tool/plugin.json.template`
 - `wasm_model/plugin.json.template`
 
-New model plugins should declare a `provider_profile` such as `openai.responses` or `anthropic.messages` so the host can enforce provider routing and auth policy.
+New model plugins should declare a structured `provider_profile` object. Kelvin
+core routes and adapts requests by `protocol_family`, so most new providers only
+need manifest changes, not host-runtime changes.
 
 The author-kit templates default to `unsigned_local` so community contributors can
 build and install plugins locally without access to AgenticHighway's signing

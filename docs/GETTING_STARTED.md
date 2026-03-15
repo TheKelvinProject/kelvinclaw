@@ -214,6 +214,7 @@ For the supported model-plugin contributor path, use:
 
 - `docs/build-a-model-plugin.md`
 - `examples/kelvin-anthropic-plugin`
+- `examples/kelvin-openrouter-plugin`
 
 Docker-first authoring shortcut:
 

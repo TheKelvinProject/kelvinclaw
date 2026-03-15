@@ -1390,8 +1390,8 @@ mod tests {
     use base64::Engine as _;
     use ed25519_dalek::{Signer, SigningKey};
     use kelvin_core::{
-        KelvinError, ModelInput, ModelOutput, ModelProvider, RunOutcome,
-        ANTHROPIC_MESSAGES_PROFILE_ID, OPENAI_RESPONSES_PROFILE_ID,
+        KelvinError, ModelInput, ModelOutput, ModelProvider, ModelProviderAuthScheme,
+        ModelProviderProfile, ModelProviderProtocolFamily, RunOutcome,
     };
     use mockito::Server;
     use serde_json::json;
@@ -1693,7 +1693,7 @@ mod tests {
         plugin_id: &str,
         plugin_name: &str,
         provider_name: &str,
-        provider_profile: &str,
+        provider_profile: ModelProviderProfile,
         model_name: &str,
         allow_host: &str,
         entrypoint: &str,
@@ -1752,7 +1752,7 @@ mod tests {
             "acme.openai",
             "Acme OpenAI Plugin",
             "openai",
-            OPENAI_RESPONSES_PROFILE_ID,
+            ModelProviderProfile::builtin("openai.responses").expect("openai builtin profile"),
             "gpt-4.1-mini",
             allow_host,
             "kelvin_openai.wasm",
@@ -1770,10 +1770,40 @@ mod tests {
             "acme.anthropic",
             "Acme Anthropic Plugin",
             "anthropic",
-            ANTHROPIC_MESSAGES_PROFILE_ID,
+            ModelProviderProfile::builtin("anthropic.messages").expect("anthropic builtin profile"),
             "claude-haiku-4-5-20251001",
             allow_host,
             "kelvin_anthropic.wasm",
+        );
+    }
+
+    fn seed_openrouter_plugin_for_mock_host(
+        plugin_home: &Path,
+        trust_policy_path: &Path,
+        allow_host: &str,
+    ) {
+        seed_model_plugin_for_mock_host(
+            plugin_home,
+            trust_policy_path,
+            "acme.openrouter",
+            "Acme OpenRouter Plugin",
+            "openrouter",
+            ModelProviderProfile {
+                id: "openrouter.chat".to_string(),
+                provider_name: "openrouter".to_string(),
+                protocol_family: ModelProviderProtocolFamily::OpenAiChatCompletions,
+                api_key_env: "OPENROUTER_API_KEY".to_string(),
+                base_url_env: "OPENROUTER_BASE_URL".to_string(),
+                default_base_url: "https://openrouter.ai/api/v1".to_string(),
+                endpoint_path: "chat/completions".to_string(),
+                auth_header: "authorization".to_string(),
+                auth_scheme: ModelProviderAuthScheme::Bearer,
+                static_headers: Vec::new(),
+                default_allow_hosts: vec!["openrouter.ai".to_string()],
+            },
+            "openai/gpt-4.1-mini",
+            allow_host,
+            "kelvin_openrouter.wasm",
         );
     }
 
@@ -1980,6 +2010,95 @@ mod tests {
             .payloads
             .iter()
             .any(|payload| payload.contains("mock-anthropic-ok")));
+    }
+
+    #[tokio::test]
+    async fn run_with_sdk_uses_installed_openrouter_model_plugin_via_mock_server() {
+        let _guard = ENV_LOCK
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let workspace = unique_workspace();
+        let plugin_home = workspace.join("plugins");
+        let trust_policy = workspace.join("trusted_publishers.json");
+        seed_cli_plugin_for_tests(&plugin_home, &trust_policy);
+
+        let mut server = Server::new_async().await;
+        let response_body = json!({
+            "id": "chatcmpl-test",
+            "choices": [
+                {
+                    "index": 0,
+                    "message": {
+                        "role": "assistant",
+                        "content": "mock-openrouter-ok"
+                    },
+                    "finish_reason": "stop"
+                }
+            ],
+            "usage": {
+                "prompt_tokens": 10,
+                "completion_tokens": 4,
+                "total_tokens": 14
+            }
+        })
+        .to_string();
+        let mock = server
+            .mock("POST", "/api/v1/chat/completions")
+            .with_status(200)
+            .with_header("content-type", "application/json")
+            .with_body(response_body)
+            .create_async()
+            .await;
+        let base_url = format!("{}/api/v1", server.url());
+        let allow_host = "127.0.0.1".to_string();
+        seed_openrouter_plugin_for_mock_host(&plugin_home, &trust_policy, &allow_host);
+
+        let previous_plugin_home = std::env::var("KELVIN_PLUGIN_HOME").ok();
+        let previous_trust_policy = std::env::var("KELVIN_TRUST_POLICY_PATH").ok();
+        let previous_key = std::env::var("OPENROUTER_API_KEY").ok();
+        let previous_base = std::env::var("OPENROUTER_BASE_URL").ok();
+        std::env::set_var("KELVIN_PLUGIN_HOME", plugin_home.as_os_str());
+        std::env::set_var("KELVIN_TRUST_POLICY_PATH", trust_policy.as_os_str());
+        std::env::set_var("OPENROUTER_API_KEY", "test-openrouter-key");
+        std::env::set_var("OPENROUTER_BASE_URL", &base_url);
+
+        let mut config = KelvinSdkConfig::for_prompt("hello openrouter");
+        config.workspace_dir = workspace.clone();
+        config.timeout_ms = 5_000;
+        config.memory_mode = KelvinCliMemoryMode::Fallback;
+        config.load_installed_plugins = true;
+        config.model_provider = KelvinSdkModelSelection::InstalledPlugin {
+            plugin_id: "acme.openrouter".to_string(),
+        };
+
+        let result = run_with_sdk(config)
+            .await
+            .expect("run with openrouter plugin");
+        mock.assert_async().await;
+
+        match previous_plugin_home {
+            Some(value) => std::env::set_var("KELVIN_PLUGIN_HOME", value),
+            None => std::env::remove_var("KELVIN_PLUGIN_HOME"),
+        }
+        match previous_trust_policy {
+            Some(value) => std::env::set_var("KELVIN_TRUST_POLICY_PATH", value),
+            None => std::env::remove_var("KELVIN_TRUST_POLICY_PATH"),
+        }
+        match previous_key {
+            Some(value) => std::env::set_var("OPENROUTER_API_KEY", value),
+            None => std::env::remove_var("OPENROUTER_API_KEY"),
+        }
+        match previous_base {
+            Some(value) => std::env::set_var("OPENROUTER_BASE_URL", value),
+            None => std::env::remove_var("OPENROUTER_BASE_URL"),
+        }
+
+        assert_eq!(result.provider, "openrouter");
+        assert_eq!(result.model, "openai/gpt-4.1-mini");
+        assert!(result
+            .payloads
+            .iter()
+            .any(|payload| payload.contains("mock-openrouter-ok")));
     }
 
     #[tokio::test]

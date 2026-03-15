@@ -68,6 +68,7 @@ scripts/plugin-author-docker.sh -- bash -lc '
 The canonical first-party model-plugin example is:
 
 - `examples/kelvin-anthropic-plugin`
+- `examples/kelvin-openrouter-plugin`
 
 You can copy it, rename the manifest fields, and adjust:
 
@@ -77,6 +78,25 @@ You can copy it, rename the manifest fields, and adjust:
 - `provider_profile`
 - `model_name`
 - `network_allow_hosts`
+
+For a non-builtin provider that still fits an existing protocol family, scaffold
+the structured profile directly:
+
+```bash
+scripts/kelvin-plugin.sh new \
+  --id acme.openrouter \
+  --name "Acme OpenRouter" \
+  --runtime wasm_model_v1 \
+  --provider-name openrouter \
+  --provider-profile openrouter.chat \
+  --protocol-family openai_chat_completions \
+  --api-key-env OPENROUTER_API_KEY \
+  --base-url-env OPENROUTER_BASE_URL \
+  --default-base-url https://openrouter.ai/api/v1 \
+  --endpoint-path chat/completions \
+  --allow-host openrouter.ai \
+  --model-name openai/gpt-4.1-mini
+```
 
 ## Local Install And Run
 

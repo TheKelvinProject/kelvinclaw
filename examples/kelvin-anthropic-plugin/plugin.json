@@ -14,7 +14,26 @@
   "max_core_version": null,
   "runtime": "wasm_model_v1",
   "provider_name": "anthropic",
-  "provider_profile": "anthropic.messages",
+  "provider_profile": {
+    "id": "anthropic.messages",
+    "provider_name": "anthropic",
+    "protocol_family": "anthropic_messages",
+    "api_key_env": "ANTHROPIC_API_KEY",
+    "base_url_env": "ANTHROPIC_BASE_URL",
+    "default_base_url": "https://api.anthropic.com",
+    "endpoint_path": "v1/messages",
+    "auth_header": "x-api-key",
+    "auth_scheme": "raw",
+    "static_headers": [
+      {
+        "name": "anthropic-version",
+        "value": "2023-06-01"
+      }
+    ],
+    "default_allow_hosts": [
+      "api.anthropic.com"
+    ]
+  },
   "model_name": "claude-haiku-4-5-20251001",
   "entrypoint": "plugin.wasm",
   "entrypoint_sha256": "82d6b34bc30027c9b8e59a0f91163da41a4b20b4aa7b76c99079dec35f71432a",

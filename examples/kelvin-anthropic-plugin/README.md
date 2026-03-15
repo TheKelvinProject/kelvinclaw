@@ -2,8 +2,8 @@
 
 This example is the canonical first-party `wasm_model_v1` source crate for the
 public Kelvin plugin-authoring flow. Community contributors can copy this
-directory, rename the manifest fields, and point `provider_profile` at their own
-host-routed model profile.
+directory, rename the manifest fields, and replace the structured
+`provider_profile` object with their own host-routed model profile.
 
 Quick commands:
 

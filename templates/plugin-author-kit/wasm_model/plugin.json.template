@@ -14,7 +14,21 @@
   "max_core_version": null,
   "runtime": "wasm_model_v1",
   "provider_name": "openai",
-  "provider_profile": "openai.responses",
+  "provider_profile": {
+    "id": "openai.responses",
+    "provider_name": "openai",
+    "protocol_family": "openai_responses",
+    "api_key_env": "OPENAI_API_KEY",
+    "base_url_env": "OPENAI_BASE_URL",
+    "default_base_url": "https://api.openai.com",
+    "endpoint_path": "v1/responses",
+    "auth_header": "authorization",
+    "auth_scheme": "bearer",
+    "static_headers": [],
+    "default_allow_hosts": [
+      "api.openai.com"
+    ]
+  },
   "model_name": "gpt-4.1-mini",
   "entrypoint": "plugin.wasm",
   "entrypoint_sha256": null,

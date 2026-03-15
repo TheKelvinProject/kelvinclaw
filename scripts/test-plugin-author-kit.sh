@@ -51,6 +51,24 @@ mv ./plugin-acme/plugin.json.tmp ./plugin-acme/plugin.json
 "${PLUGIN_CLI}" pack --manifest ./plugin-anthropic/plugin.json
 "${PLUGIN_CLI}" verify --package ./plugin-anthropic/dist/acme.anthropic-0.1.0.tar.gz
 
+"${PLUGIN_CLI}" new \
+  --id acme.openrouter \
+  --name "Acme OpenRouter" \
+  --runtime wasm_model_v1 \
+  --provider-name openrouter \
+  --provider-profile openrouter.chat \
+  --protocol-family openai_chat_completions \
+  --api-key-env OPENROUTER_API_KEY \
+  --base-url-env OPENROUTER_BASE_URL \
+  --default-base-url https://openrouter.ai/api/v1 \
+  --endpoint-path chat/completions \
+  --allow-host openrouter.ai \
+  --model-name openai/gpt-4.1-mini \
+  --out ./plugin-openrouter
+"${PLUGIN_CLI}" test --manifest ./plugin-openrouter/plugin.json --core-versions "0.1.0,0.2.0"
+"${PLUGIN_CLI}" pack --manifest ./plugin-openrouter/plugin.json
+"${PLUGIN_CLI}" verify --package ./plugin-openrouter/dist/acme.openrouter-0.1.0.tar.gz
+
 # Signed-community tier should fail without plugin.sig.
 jq '.quality_tier = "signed_community" | .publisher = "acme"' ./plugin-acme/plugin.json > ./plugin-acme/plugin.json.tmp
 mv ./plugin-acme/plugin.json.tmp ./plugin-acme/plugin.json
