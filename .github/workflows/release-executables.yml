@@ -22,39 +22,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  resolve-version:
-    name: Resolve Release Version
-    runs-on: blacksmith-2vcpu-ubuntu-2404
-    outputs:
-      version: ${{ steps.resolve.outputs.version }}
-    steps:
-      - name: Checkout
-        uses: useblacksmith/checkout@41cdeedae8edb2e684ba22896a5fd2a3cb85db6b
-        with:
-          persist-credentials: false
-
-      - name: Resolve version label
-        id: resolve
-        shell: bash
-        run: |
-          set -euo pipefail
-          raw_version="${{ github.event.inputs.version }}"
-          if [[ "${GITHUB_REF_TYPE:-}" == "tag" ]]; then
-            raw_version="${GITHUB_REF_NAME}"
-          fi
-          if [[ -z "${raw_version}" ]]; then
-            raw_version="$(awk -F'"' '/^version = "/ {print $2; exit}' Cargo.toml)"
-          fi
-          normalized_version="${raw_version#v}"
-          if [[ ! "${normalized_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
-            echo "Invalid release version: ${raw_version}" >&2
-            exit 1
-          fi
-          echo "version=${normalized_version}" >> "${GITHUB_OUTPUT}"
-
   build-linux:
     name: Build Linux (${{ matrix.target }})
-    needs: resolve-version
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -79,8 +48,25 @@ jobs:
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
+      - name: Resolve release version
+        shell: bash
+        env:
+          RAW_RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.version || '' }}
+        run: |
+          set -euo pipefail
+          raw_version="${RAW_RELEASE_VERSION}"
+          if [[ -z "${raw_version}" ]]; then
+            raw_version="$(awk -F'"' '/^version = "/ {print $2; exit}' Cargo.toml)"
+          fi
+          normalized_version="${raw_version#v}"
+          if [[ ! "${normalized_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release version: ${raw_version}" >&2
+            exit 1
+          fi
+          echo "RELEASE_VERSION=${normalized_version}" >> "${GITHUB_ENV}"
+
       - name: Build and package Linux release artifacts
-        run: scripts/package-linux-release.sh --target "${{ matrix.target }}" --version "${{ needs.resolve-version.outputs.version }}"
+        run: scripts/package-linux-release.sh --target "${{ matrix.target }}" --version "${RELEASE_VERSION}"
 
       - name: Upload Linux release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -96,7 +82,6 @@ jobs:
 
   build-macos:
     name: Build macOS (${{ matrix.target }})
-    needs: resolve-version
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -121,9 +106,26 @@ jobs:
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
+      - name: Resolve release version
+        shell: bash
+        env:
+          RAW_RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.version || '' }}
+        run: |
+          set -euo pipefail
+          raw_version="${RAW_RELEASE_VERSION}"
+          if [[ -z "${raw_version}" ]]; then
+            raw_version="$(awk -F'"' '/^version = "/ {print $2; exit}' Cargo.toml)"
+          fi
+          normalized_version="${raw_version#v}"
+          if [[ ! "${normalized_version}" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Invalid release version: ${raw_version}" >&2
+            exit 1
+          fi
+          echo "RELEASE_VERSION=${normalized_version}" >> "${GITHUB_ENV}"
+
       - name: Build and package macOS release artifacts
         shell: bash
-        run: scripts/package-macos-release.sh --target "${{ matrix.target }}" --version "${{ needs.resolve-version.outputs.version }}"
+        run: scripts/package-macos-release.sh --target "${{ matrix.target }}" --version "${RELEASE_VERSION}"
 
       - name: Upload macOS release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -137,7 +139,6 @@ jobs:
 
   build-windows:
     name: Build Windows (${{ matrix.target }})
-    needs: resolve-version
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 60
     strategy:
@@ -160,9 +161,24 @@ jobs:
       - name: Restore Rust cache
         uses: Swatinem/rust-cache@c19371144df3bb44fab255c43d04cbc2ab54d1c4
 
+      - name: Resolve release version
+        shell: pwsh
+        env:
+          RAW_RELEASE_VERSION: ${{ github.ref_type == 'tag' && github.ref_name || github.event.inputs.version || '' }}
+        run: |
+          $RawVersion = $env:RAW_RELEASE_VERSION
+          if (-not $RawVersion) {
+            $RawVersion = Select-String -Path "Cargo.toml" -Pattern '^version = "(.+)"$' | Select-Object -First 1 | ForEach-Object { $_.Matches[0].Groups[1].Value }
+          }
+          $NormalizedVersion = $RawVersion -replace '^v', ''
+          if ($NormalizedVersion -notmatch '^\d+\.\d+\.\d+$') {
+            throw "Invalid release version: $RawVersion"
+          }
+          "RELEASE_VERSION=$NormalizedVersion" | Out-File -FilePath $env:GITHUB_ENV -Encoding utf8 -Append
+
       - name: Build and package Windows release artifacts
         shell: pwsh
-        run: scripts/package-windows-release.ps1 -Target "${{ matrix.target }}" -Version "${{ needs.resolve-version.outputs.version }}"
+        run: scripts/package-windows-release.ps1 -Target "${{ matrix.target }}" -Version "${env:RELEASE_VERSION}"
 
       - name: Upload Windows release artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
@@ -178,7 +194,6 @@ jobs:
     name: Publish GitHub Release
     if: ${{ github.event_name == 'push' }}
     needs:
-      - resolve-version
       - build-linux
       - build-macos
       - build-windows
