@@ -19,6 +19,7 @@ For end users, plugins are installed as packages and executed by Kelvin. They do
 Choose the onboarding path for your experience level:
 
 - [docs/GETTING_STARTED.md](docs/GETTING_STARTED.md)
+- latest public release: [GitHub Releases](https://github.com/AgenticHighway/kelvinclaw/releases/latest)
 
 Canonical quick start commands:
 
@@ -58,6 +59,10 @@ Linux and Windows builds run on Blacksmith runners. macOS builds run on
 GitHub-hosted macOS runners. macOS artifacts are intentionally unsigned and
 unnotarized in this phase.
 
+Latest public release:
+
+- [GitHub Releases](https://github.com/AgenticHighway/kelvinclaw/releases/latest)
+
 The intended Unix end-user entrypoint is:
 
 ```bash
@@ -66,11 +71,16 @@ cd kelvinclaw-<version>-linux-<arch>
 ./kelvin
 ```
 
-On first run, `./kelvin` fetches the required official first-party plugins into
-`~/.kelvinclaw`, then starts Kelvin. Windows bundles ship `kelvin.cmd` and
-`kelvin.ps1` at the archive root. For manual validation without publishing a
-GitHub Release, run the `Release Executables` workflow with
-`workflow_dispatch`.
+On first run, `./kelvin` fetches the official trust policy plus the required
+first-party plugins into `~/.kelvinclaw`, then starts Kelvin. The currently
+bootstrapped first-party packages are:
+
+- `kelvin.cli@0.1.1`
+- `kelvin.openai@0.1.1` when `OPENAI_API_KEY` is available
+
+Windows bundles ship `kelvin.cmd` and `kelvin.ps1` at the archive root. For
+manual validation without publishing a GitHub Release, run the `Release
+Executables` workflow with `workflow_dispatch`.
 
 Release prerequisites:
 
@@ -85,6 +95,16 @@ OpenAI key options for the release launcher:
 - put `OPENAI_API_KEY=...` in `./.env` or `./.env.local`
 - put `OPENAI_API_KEY=...` in `~/.kelvinclaw/.env` or `~/.kelvinclaw/.env.local`
 - if you run `./kelvin` interactively with no key configured, Kelvin prompts once and uses the key for that run only
+
+Validated public onboarding today:
+
+- Linux release bundles are validated end to end on fresh Ubuntu with `curl`
+  and `ca-certificates` installed.
+- The no-args `./kelvin` flow fetches trust metadata, installs official
+  plugins, and completes a real OpenAI-backed run when `OPENAI_API_KEY` is
+  configured.
+- macOS and Windows artifacts are published from CI, but the fully documented
+  and validated public onboarding path today is Linux-first.
 
 ## Repository Layout
 
@@ -171,7 +191,7 @@ The runtime integrates through the Kelvin Core SDK path:
 - `SdkModelProviderRegistry` (validated model-provider projection)
 - `kelvin_cli` (CLI plugin executed before each run)
 - `kelvin.openai` (first-party OpenAI model plugin, optional)
-- `kelvin.anthropic` (first-party Anthropic model plugin, optional)
+- `kelvin.anthropic` (planned first-party Anthropic model plugin; not currently published in the official plugin index)
 - Kelvin Core tool-pack plugins (`fs_safe_read`, `fs_safe_write`, `web_fetch_safe`, `schedule_cron`, `session_tools`)
 
 ## Trusted Executive + Untrusted Skills
@@ -229,15 +249,11 @@ KELVIN_TRUST_POLICY_PATH=.kelvin/trusted_publishers.json \
 CARGO_TARGET_DIR=target/try-kelvin-cli cargo run -p kelvin-host -- --prompt "hello" --model-provider kelvin.openai --workspace /path/to/workspace --memory fallback
 ```
 
-Anthropic provider path:
+Anthropic provider status:
 
-```bash
-scripts/install-kelvin-anthropic-plugin.sh
-ANTHROPIC_API_KEY=<your_key> \
-KELVIN_PLUGIN_HOME=.kelvin/plugins \
-KELVIN_TRUST_POLICY_PATH=.kelvin/trusted_publishers.json \
-CARGO_TARGET_DIR=target/try-kelvin-cli cargo run -p kelvin-host -- --prompt "hello" --model-provider kelvin.anthropic --workspace /path/to/workspace --memory fallback
-```
+- the runtime contract and docs exist
+- a public first-party `kelvin.anthropic` package is not currently published in the official plugin index
+- treat [docs/anthropic-plugin-install-and-run.md](docs/anthropic-plugin-install-and-run.md) as forward-looking until that package exists
 
 The CLI executable is only a thin launcher. Runtime behavior is composed in `kelvin-sdk`, and
 the CLI path executes through an installed plugin (`kelvin_cli`) loaded through the
