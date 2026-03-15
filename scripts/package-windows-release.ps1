@@ -3,12 +3,14 @@ $ErrorActionPreference = "Stop"
 param(
     [Parameter(Mandatory = $true)]
     [string]$Target,
-    [string]$OutputDir = (Join-Path $PSScriptRoot "..\\dist\\releases"),
-    [string]$TargetDir = (Join-Path $PSScriptRoot "..\\target\\releases"),
+    [string]$OutputDir = "",
+    [string]$TargetDir = "",
     [string]$Version = ""
 )
 
 $RootDir = (Resolve-Path (Join-Path $PSScriptRoot "..")).Path
+$OutputDir = if ($OutputDir) { $OutputDir } else { Join-Path $PSScriptRoot "..\\dist\\releases" }
+$TargetDir = if ($TargetDir) { $TargetDir } else { Join-Path $PSScriptRoot "..\\target\\releases" }
 $OutputDir = [System.IO.Path]::GetFullPath($OutputDir)
 $TargetDir = [System.IO.Path]::GetFullPath($TargetDir)
 
