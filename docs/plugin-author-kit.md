@@ -1,6 +1,7 @@
 # Plugin Author Kit
 
-Kelvin provides an authoring flow that does not require modifying root crates.
+Kelvin provides an authoring flow that does not require modifying root crates or
+reading Kelvin runtime internals.
 
 ## Commands
 
@@ -25,6 +26,15 @@ Equivalent direct command:
 scripts/kelvin-plugin.sh <new|test|pack|verify> ...
 ```
 
+If you want a reproducible container instead of local Rust setup, use the
+repo-owned Ubuntu 24.04 author image through:
+
+```bash
+scripts/plugin-author-docker.sh -- bash
+```
+
+That is the supported Docker authoring path for plugin contributors.
+
 ## Minimal Flow
 
 ```bash
@@ -33,6 +43,18 @@ scripts/kelvin-plugin.sh test --manifest ./plugin-acme.echo/plugin.json
 scripts/kelvin-plugin.sh pack --manifest ./plugin-acme.echo/plugin.json
 scripts/kelvin-plugin.sh verify --package ./plugin-acme.echo/dist/acme.echo-0.1.0.tar.gz
 ```
+
+For model plugins, use the dedicated guide:
+
+- [docs/build-a-model-plugin.md](build-a-model-plugin.md)
+
+`kelvin plugin new --runtime wasm_model_v1` now creates a working source project
+with:
+
+- `plugin.json`
+- `src/lib.rs`
+- `build.sh`
+- a compiled `payload/plugin.wasm`
 
 ## Templates
 
@@ -43,7 +65,20 @@ Reference templates:
 
 For new model plugins, prefer the generic host-routed `provider_profile` field (`openai.responses`, `anthropic.messages`) instead of the legacy provider-specific host import.
 
+The maintained example source crate is:
+
+- `examples/kelvin-anthropic-plugin`
+
+Use the example in Docker with:
+
+```bash
+scripts/plugin-author-docker.sh -- bash -lc 'cd examples/kelvin-anthropic-plugin && ./build.sh'
+```
+
 ## Signing
+
+Local/community development plugins can stay `unsigned_local`. Kelvin warns on
+install for that quality tier, but still allows the plugin to install.
 
 ```bash
 AWS_PROFILE=ah-willsarg-iam scripts/plugin-sign.sh \

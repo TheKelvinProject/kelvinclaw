@@ -19,7 +19,7 @@ use kelvin_core::{
     InMemoryPluginRegistry, KelvinError, KelvinResult, ModelInput, ModelOutput, ModelProvider,
     ModelProviderProfile, PluginCapability, PluginFactory, PluginManifest, PluginRegistry,
     PluginSecurityPolicy, SdkModelProviderRegistry, SdkToolRegistry, Tool, ToolCallInput,
-    ToolCallResult, OPENAI_RESPONSES_PROFILE_ID,
+    ToolCallResult, ANTHROPIC_MESSAGES_PROFILE_ID, OPENAI_RESPONSES_PROFILE_ID,
 };
 use kelvin_wasm::{
     model_abi, ClawCall, ModelSandboxPolicy, SandboxPolicy, WasmModelHost, WasmSkillHost,
@@ -780,6 +780,7 @@ impl InstalledWasmModelProvider {
             network_allow_hosts: self.scopes.network_allow_hosts.clone(),
             timeout_ms: self.controls.timeout_ms,
             provider_profile: self.provider_profile.clone(),
+            model_name: Some(self.model_name.clone()),
             ..ModelSandboxPolicy::default()
         }
     }
@@ -872,6 +873,14 @@ impl InstalledWasmModelProvider {
                 self.plugin_id, self.plugin_version, message
             )));
         }
+        if let Ok(output) = serde_json::from_value::<ModelOutput>(value.clone()) {
+            return Ok(output);
+        }
+        if let Some(profile) = self.provider_profile.as_ref() {
+            if let Some(output) = adapt_provider_response(profile, &value) {
+                return Ok(output);
+            }
+        }
         serde_json::from_value::<ModelOutput>(value).map_err(|err| {
             KelvinError::InvalidInput(format!(
                 "model plugin '{}' returned invalid model output: {err}",
@@ -879,6 +888,106 @@ impl InstalledWasmModelProvider {
             ))
         })
     }
+}
+
+fn adapt_provider_response(profile: &ModelProviderProfile, value: &Value) -> Option<ModelOutput> {
+    match profile.id.as_str() {
+        OPENAI_RESPONSES_PROFILE_ID => adapt_openai_response(value),
+        ANTHROPIC_MESSAGES_PROFILE_ID => adapt_anthropic_response(value),
+        _ => None,
+    }
+}
+
+fn adapt_openai_response(value: &Value) -> Option<ModelOutput> {
+    let assistant_text = value
+        .get("output_text")
+        .and_then(Value::as_str)
+        .map(str::to_owned)
+        .or_else(|| {
+            let output = value.get("output")?.as_array()?;
+            let mut parts = Vec::new();
+            for item in output {
+                if item.get("type").and_then(Value::as_str) != Some("message") {
+                    continue;
+                }
+                let content = item.get("content")?.as_array()?;
+                for block in content {
+                    if block.get("type").and_then(Value::as_str) == Some("output_text") {
+                        if let Some(text) = block.get("text").and_then(Value::as_str) {
+                            parts.push(text.to_string());
+                        }
+                    }
+                }
+            }
+            if parts.is_empty() {
+                None
+            } else {
+                Some(parts.join("\n"))
+            }
+        })?;
+
+    let usage = value.get("usage").and_then(adapt_usage);
+    let stop_reason = value
+        .get("status")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    Some(ModelOutput {
+        assistant_text,
+        stop_reason,
+        tool_calls: Vec::new(),
+        usage,
+    })
+}
+
+fn adapt_anthropic_response(value: &Value) -> Option<ModelOutput> {
+    let content = value.get("content")?.as_array()?;
+    let mut parts = Vec::new();
+    for block in content {
+        if block.get("type").and_then(Value::as_str) == Some("text") {
+            if let Some(text) = block.get("text").and_then(Value::as_str) {
+                parts.push(text.to_string());
+            }
+        }
+    }
+    if parts.is_empty() {
+        return None;
+    }
+
+    let usage = value.get("usage").and_then(adapt_usage);
+    let stop_reason = value
+        .get("stop_reason")
+        .and_then(Value::as_str)
+        .map(str::to_owned);
+
+    Some(ModelOutput {
+        assistant_text: parts.join("\n"),
+        stop_reason,
+        tool_calls: Vec::new(),
+        usage,
+    })
+}
+
+fn adapt_usage(usage: &Value) -> Option<kelvin_core::ModelUsage> {
+    let input_tokens = usage.get("input_tokens").and_then(Value::as_u64);
+    let output_tokens = usage.get("output_tokens").and_then(Value::as_u64);
+    let total_tokens = usage
+        .get("total_tokens")
+        .and_then(Value::as_u64)
+        .or_else(|| match (input_tokens, output_tokens) {
+            (Some(input), Some(output)) => Some(input + output),
+            _ => None,
+        });
+
+    if input_tokens.is_none() && output_tokens.is_none() && total_tokens.is_none() {
+        return None;
+    }
+
+    Some(kelvin_core::ModelUsage {
+        input_tokens,
+        output_tokens,
+        total_tokens,
+    })
 }
 
 #[async_trait]
@@ -1660,11 +1769,11 @@ mod tests {
     use serde_json::json;
 
     use super::{
-        load_installed_plugins, load_installed_tool_plugins, sha256_hex,
-        InstalledPluginLoaderConfig, PublisherTrustPolicy,
+        adapt_anthropic_response, adapt_openai_response, load_installed_plugins,
+        load_installed_tool_plugins, sha256_hex, InstalledPluginLoaderConfig, PublisherTrustPolicy,
     };
     use kelvin_core::{
-        PluginSecurityPolicy, ToolCallInput, ToolRegistry, OPENAI_RESPONSES_PROFILE_ID,
+        ModelOutput, PluginSecurityPolicy, ToolCallInput, ToolRegistry, OPENAI_RESPONSES_PROFILE_ID,
     };
 
     fn unique_temp_dir(name: &str) -> std::path::PathBuf {
@@ -1771,6 +1880,64 @@ mod tests {
                 "circuit_breaker_cooldown_ms": 1000
             }
         })
+    }
+
+    #[test]
+    fn adapts_anthropic_provider_response_into_model_output() {
+        let output = adapt_anthropic_response(&json!({
+            "type": "message",
+            "content": [
+                {"type": "text", "text": "KelvinClaw is a plugin-driven runtime."}
+            ],
+            "stop_reason": "end_turn",
+            "usage": {
+                "input_tokens": 11,
+                "output_tokens": 9
+            }
+        }))
+        .expect("anthropic provider response should adapt");
+
+        assert_eq!(
+            output,
+            ModelOutput {
+                assistant_text: "KelvinClaw is a plugin-driven runtime.".to_string(),
+                stop_reason: Some("end_turn".to_string()),
+                tool_calls: Vec::new(),
+                usage: Some(kelvin_core::ModelUsage {
+                    input_tokens: Some(11),
+                    output_tokens: Some(9),
+                    total_tokens: Some(20),
+                }),
+            }
+        );
+    }
+
+    #[test]
+    fn adapts_openai_provider_response_into_model_output() {
+        let output = adapt_openai_response(&json!({
+            "output_text": "KelvinClaw is a plugin-driven runtime.",
+            "status": "completed",
+            "usage": {
+                "input_tokens": 10,
+                "output_tokens": 8,
+                "total_tokens": 18
+            }
+        }))
+        .expect("openai provider response should adapt");
+
+        assert_eq!(
+            output,
+            ModelOutput {
+                assistant_text: "KelvinClaw is a plugin-driven runtime.".to_string(),
+                stop_reason: Some("completed".to_string()),
+                tool_calls: Vec::new(),
+                usage: Some(kelvin_core::ModelUsage {
+                    input_tokens: Some(10),
+                    output_tokens: Some(8),
+                    total_tokens: Some(18),
+                }),
+            }
+        );
     }
 
     #[tokio::test]

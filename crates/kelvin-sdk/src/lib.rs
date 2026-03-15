@@ -1771,7 +1771,7 @@ mod tests {
             "Acme Anthropic Plugin",
             "anthropic",
             ANTHROPIC_MESSAGES_PROFILE_ID,
-            "claude-3-5-haiku-latest",
+            "claude-haiku-4-5-20251001",
             allow_host,
             "kelvin_anthropic.wasm",
         );
@@ -1975,7 +1975,7 @@ mod tests {
         }
 
         assert_eq!(result.provider, "anthropic");
-        assert_eq!(result.model, "claude-3-5-haiku-latest");
+        assert_eq!(result.model, "claude-haiku-4-5-20251001");
         assert!(result
             .payloads
             .iter()
@@ -2077,7 +2077,7 @@ mod tests {
 
         assert_eq!(result.provider, "kelvin.failover");
         assert!(result.model.contains("openai/gpt-4.1-mini"));
-        assert!(result.model.contains("anthropic/claude-3-5-haiku-latest"));
+        assert!(result.model.contains("anthropic/claude-haiku-4-5-20251001"));
         assert!(result
             .payloads
             .iter()

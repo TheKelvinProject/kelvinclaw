@@ -28,6 +28,8 @@ sha256_file() {
 
 require_cmd jq
 require_cmd tar
+require_cmd cargo
+require_cmd rustup
 
 WORK_DIR="$(mktemp -d)"
 trap 'rm -rf "${WORK_DIR}"' EXIT
@@ -43,6 +45,11 @@ mv ./plugin-acme/plugin.json.tmp ./plugin-acme/plugin.json
 "${PLUGIN_CLI}" test --manifest ./plugin-acme/plugin.json --core-versions "0.1.0,0.2.0"
 "${PLUGIN_CLI}" pack --manifest ./plugin-acme/plugin.json
 "${PLUGIN_CLI}" verify --package ./plugin-acme/dist/acme.echo-0.1.0.tar.gz
+
+"${PLUGIN_CLI}" new --id acme.anthropic --name "Acme Anthropic" --runtime wasm_model_v1 --provider-profile anthropic.messages --out ./plugin-anthropic
+"${PLUGIN_CLI}" test --manifest ./plugin-anthropic/plugin.json --core-versions "0.1.0,0.2.0"
+"${PLUGIN_CLI}" pack --manifest ./plugin-anthropic/plugin.json
+"${PLUGIN_CLI}" verify --package ./plugin-anthropic/dist/acme.anthropic-0.1.0.tar.gz
 
 # Signed-community tier should fail without plugin.sig.
 jq '.quality_tier = "signed_community" | .publisher = "acme"' ./plugin-acme/plugin.json > ./plugin-acme/plugin.json.tmp

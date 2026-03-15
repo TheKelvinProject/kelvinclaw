@@ -1,10 +1,10 @@
 {
-  "id": "acme.openai",
-  "name": "Acme Model Provider",
+  "id": "kelvin.anthropic",
+  "name": "Kelvin Anthropic Model Plugin",
   "version": "0.1.0",
   "api_version": "1.0.0",
-  "description": "Example Kelvin model provider plugin",
-  "homepage": "https://example.com/acme-openai",
+  "description": "First-party Anthropic model plugin using Kelvin's provider_profile host routing.",
+  "homepage": "https://github.com/agentichighway/kelvinclaw/tree/main/examples/kelvin-anthropic-plugin",
   "capabilities": [
     "model_provider",
     "network_egress"
@@ -13,17 +13,17 @@
   "min_core_version": "0.1.0",
   "max_core_version": null,
   "runtime": "wasm_model_v1",
-  "provider_name": "openai",
-  "provider_profile": "openai.responses",
-  "model_name": "gpt-4.1-mini",
+  "provider_name": "anthropic",
+  "provider_profile": "anthropic.messages",
+  "model_name": "claude-haiku-4-5-20251001",
   "entrypoint": "plugin.wasm",
-  "entrypoint_sha256": null,
+  "entrypoint_sha256": "82d6b34bc30027c9b8e59a0f91163da41a4b20b4aa7b76c99079dec35f71432a",
   "publisher": null,
   "quality_tier": "unsigned_local",
   "capability_scopes": {
     "fs_read_paths": [],
     "network_allow_hosts": [
-      "api.openai.com"
+      "api.anthropic.com"
     ]
   },
   "operational_controls": {

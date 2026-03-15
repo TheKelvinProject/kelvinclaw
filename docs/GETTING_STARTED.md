@@ -186,6 +186,12 @@ Prerequisites:
 - `rustup` + `cargo`
 - `wasm32-unknown-unknown` target
 
+Docker alternative:
+
+- `docker`
+- `scripts/plugin-author-docker.sh` uses a repo-owned Ubuntu 24.04 plugin
+  author image so you do not need to start from a blank Ubuntu container
+
 Setup:
 
 ```bash
@@ -204,6 +210,19 @@ kelvin plugin new --id acme.echo --name "Acme Echo" --runtime wasm_tool_v1
 kelvin plugin test --manifest ./plugin-acme.echo/plugin.json
 ```
 
+For the supported model-plugin contributor path, use:
+
+- `docs/build-a-model-plugin.md`
+- `examples/kelvin-anthropic-plugin`
+
+Docker-first authoring shortcut:
+
+```bash
+git clone <repo-url>
+cd kelvinclaw
+scripts/plugin-author-docker.sh -- scripts/test-plugin-author-kit.sh
+```
+
 Verification:
 
 ```bash
@@ -215,6 +234,7 @@ Expected result:
 - Sample WASM skill builds successfully.
 - WASM runner executes the module under sandbox policy.
 - Plugin author commands scaffold and validate plugin package structure without touching root crates.
+- Model plugins can be scaffolded, built, packed, and locally installed through the same public SDK surface.
 
 ## Verify All Tracks
 

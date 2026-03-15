@@ -5,6 +5,7 @@ Kelvin plugin manifests may declare `quality_tier`:
 - `unsigned_local`
   - local development and experimentation only
   - no signature required
+  - Kelvin warns on install, but still allows local installation
 - `signed_community`
   - signed package expected (`plugin.sig`)
   - non-empty `publisher` required
@@ -16,6 +17,8 @@ Kelvin plugin manifests may declare `quality_tier`:
 ## Verification
 
 `scripts/kelvin-plugin.sh verify` enforces tier-specific checks.
+`scripts/plugin-install.sh` prints an install-time warning for `unsigned_local`
+and `signed_community`, but does not block local installation.
 
 For trusted tier:
 

@@ -37,6 +37,13 @@ scripts/verify-onboarding.sh --track wasm
 scripts/verify-onboarding.sh --track daily
 ```
 
+Plugin authors who prefer Docker over local Rust setup should use the official
+Rust Bookworm image through:
+
+```bash
+scripts/plugin-author-docker.sh -- bash
+```
+
 ## Release Executables
 
 Tagged releases publish executable bundles for:
@@ -191,7 +198,7 @@ The runtime integrates through the Kelvin Core SDK path:
 - `SdkModelProviderRegistry` (validated model-provider projection)
 - `kelvin_cli` (CLI plugin executed before each run)
 - `kelvin.openai` (first-party OpenAI model plugin, optional)
-- `kelvin.anthropic` (planned first-party Anthropic model plugin; not currently published in the official plugin index)
+- `kelvin.anthropic` (first-party Anthropic model plugin)
 - Kelvin Core tool-pack plugins (`fs_safe_read`, `fs_safe_write`, `web_fetch_safe`, `schedule_cron`, `session_tools`)
 
 ## Trusted Executive + Untrusted Skills
@@ -251,9 +258,8 @@ CARGO_TARGET_DIR=target/try-kelvin-cli cargo run -p kelvin-host -- --prompt "hel
 
 Anthropic provider status:
 
-- the runtime contract and docs exist
-- a public first-party `kelvin.anthropic` package is not currently published in the official plugin index
-- treat [docs/anthropic-plugin-install-and-run.md](docs/anthropic-plugin-install-and-run.md) as forward-looking until that package exists
+- the runtime contract and install path are now published in the official plugin index
+- use [docs/anthropic-plugin-install-and-run.md](docs/anthropic-plugin-install-and-run.md) for the supported Anthropic flow
 
 The CLI executable is only a thin launcher. Runtime behavior is composed in `kelvin-sdk`, and
 the CLI path executes through an installed plugin (`kelvin_cli`) loaded through the
@@ -532,6 +538,26 @@ kelvin plugin test --manifest ./plugin-acme.echo/plugin.json
 kelvin plugin pack --manifest ./plugin-acme.echo/plugin.json
 kelvin plugin verify --package ./plugin-acme.echo/dist/acme.echo-0.1.0.tar.gz
 ```
+
+Model-plugin author workflow:
+
+```bash
+export PATH="$PWD/scripts:$PATH"
+kelvin plugin new --id acme.anthropic --name "Acme Anthropic" --runtime wasm_model_v1 --provider-profile anthropic.messages
+cd ./plugin-acme.anthropic
+./build.sh
+kelvin plugin test --manifest ./plugin.json
+kelvin plugin pack --manifest ./plugin.json
+kelvin plugin verify --package ./dist/acme.anthropic-0.1.0.tar.gz
+```
+
+Community/local plugins can stay `unsigned_local`. Kelvin warns on install, but
+still allows them to load from a local plugin home.
+
+Authoring docs:
+
+- [docs/plugin-author-kit.md](docs/plugin-author-kit.md)
+- [docs/build-a-model-plugin.md](docs/build-a-model-plugin.md)
 
 Trust policy template:
 

@@ -25,8 +25,14 @@ create_tar_gz() {
   if tar --help 2>/dev/null | grep -q -- '--sort='; then
     tar_args=(--sort=name --mtime='UTC 1970-01-01' --owner=0 --group=0 --numeric-owner "${tar_args[@]}")
   fi
-  if tar --help 2>/dev/null | grep -q -- '--pax-option'; then
-    tar_args=(--pax-option=delete=atime,delete=ctime "${tar_args[@]}")
+  if tar --help 2>/dev/null | grep -q -- '--no-xattrs'; then
+    tar_args=(--no-xattrs "${tar_args[@]}")
+  fi
+  if tar --help 2>/dev/null | grep -q -- '--no-acls'; then
+    tar_args=(--no-acls "${tar_args[@]}")
+  fi
+  if tar --help 2>/dev/null | grep -q -- '--no-selinux'; then
+    tar_args=(--no-selinux "${tar_args[@]}")
   fi
 
   stage_dir="$(mktemp -d)"
@@ -84,6 +90,194 @@ quality_tier_valid() {
   esac
 }
 
+provider_profile_default_provider_name() {
+  case "$1" in
+    openai.responses) printf '%s' "openai" ;;
+    anthropic.messages) printf '%s' "anthropic" ;;
+    *) return 1 ;;
+  esac
+}
+
+provider_profile_default_model_name() {
+  case "$1" in
+    openai.responses) printf '%s' "gpt-4.1-mini" ;;
+    anthropic.messages) printf '%s' "claude-haiku-4-5-20251001" ;;
+    *) printf '%s' "default" ;;
+  esac
+}
+
+provider_profile_default_hosts_json() {
+  case "$1" in
+    openai.responses) printf '%s\n' '["api.openai.com"]' ;;
+    anthropic.messages) printf '%s\n' '["api.anthropic.com"]' ;;
+    *) printf '%s\n' '[]' ;;
+  esac
+}
+
+scaffold_model_plugin_project() {
+  local output_dir="$1"
+  local plugin_id="$2"
+  local display_name="$3"
+  local plugin_version="$4"
+  local entrypoint_rel="$5"
+  local crate_package_name="$6"
+  local crate_lib_name="$7"
+
+  mkdir -p "${output_dir}/src" "${output_dir}/payload"
+
+  cat > "${output_dir}/Cargo.toml" <<EOF
+[package]
+name = "${crate_package_name}"
+version = "${plugin_version}"
+edition = "2021"
+publish = false
+
+[lib]
+name = "${crate_lib_name}"
+crate-type = ["cdylib"]
+
+[workspace]
+EOF
+
+  cat > "${output_dir}/src/lib.rs" <<'EOF'
+#![no_std]
+
+#[link(wasm_import_module = "kelvin_model_host_v1")]
+extern "C" {
+    fn provider_profile_call(req_ptr: i32, req_len: i32) -> i64;
+}
+
+const HEAP_SIZE: usize = 1024 * 1024;
+static mut HEAP: [u8; HEAP_SIZE] = [0; HEAP_SIZE];
+static mut NEXT_OFFSET: usize = 0;
+
+#[no_mangle]
+pub extern "C" fn alloc(len: i32) -> i32 {
+    if len <= 0 {
+        return 0;
+    }
+
+    let len = len as usize;
+    let align = 8usize;
+
+    unsafe {
+        let start = (NEXT_OFFSET + (align - 1)) & !(align - 1);
+        let Some(end) = start.checked_add(len) else {
+            return 0;
+        };
+        if end > HEAP_SIZE {
+            return 0;
+        }
+        NEXT_OFFSET = end;
+        core::ptr::addr_of_mut!(HEAP).cast::<u8>().add(start) as usize as i32
+    }
+}
+
+#[no_mangle]
+pub extern "C" fn dealloc(_ptr: i32, _len: i32) {}
+
+#[no_mangle]
+pub extern "C" fn infer(req_ptr: i32, req_len: i32) -> i64 {
+    // SAFETY: The trusted Kelvin host provides this import for approved
+    // provider_profile-backed model plugins.
+    unsafe { provider_profile_call(req_ptr, req_len) }
+}
+
+#[panic_handler]
+fn panic(_info: &core::panic::PanicInfo) -> ! {
+    loop {}
+}
+EOF
+
+  cat > "${output_dir}/build.sh" <<EOF
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT_DIR="\$(cd "\$(dirname "\${BASH_SOURCE[0]}")" && pwd)"
+PLUGIN_JSON="\${ROOT_DIR}/plugin.json"
+PAYLOAD_DIR="\${ROOT_DIR}/payload"
+ENTRYPOINT_REL="\$(jq -er '.entrypoint' "\${PLUGIN_JSON}")"
+ENTRYPOINT_ABS="\${PAYLOAD_DIR}/\${ENTRYPOINT_REL}"
+TARGET_ROOT="\${CARGO_TARGET_DIR:-\${ROOT_DIR}/target}"
+TARGET_DIR="\${TARGET_ROOT}/wasm32-unknown-unknown/release"
+WASM_SOURCE="\${TARGET_DIR}/${crate_lib_name}.wasm"
+
+require_cmd() {
+  local name="\$1"
+  if ! command -v "\${name}" >/dev/null 2>&1; then
+    echo "Missing required command: \${name}" >&2
+    exit 1
+  fi
+}
+
+sha256_file() {
+  local file="\$1"
+  if command -v shasum >/dev/null 2>&1; then
+    shasum -a 256 "\${file}" | awk '{print \$1}'
+    return
+  fi
+  if command -v sha256sum >/dev/null 2>&1; then
+    sha256sum "\${file}" | awk '{print \$1}'
+    return
+  fi
+  echo "Missing required command: shasum or sha256sum" >&2
+  exit 1
+}
+
+require_cmd cargo
+require_cmd jq
+require_cmd rustup
+
+rustup target add wasm32-unknown-unknown >/dev/null
+cargo build --release --target wasm32-unknown-unknown
+
+mkdir -p "\$(dirname "\${ENTRYPOINT_ABS}")"
+cp "\${WASM_SOURCE}" "\${ENTRYPOINT_ABS}"
+
+ENTRYPOINT_SHA="\$(sha256_file "\${ENTRYPOINT_ABS}")"
+jq --arg sha "\${ENTRYPOINT_SHA}" '.entrypoint_sha256 = \$sha' "\${PLUGIN_JSON}" > "\${PLUGIN_JSON}.tmp"
+mv "\${PLUGIN_JSON}.tmp" "\${PLUGIN_JSON}"
+
+echo "[kelvin-plugin] built ${plugin_id} -> \${ENTRYPOINT_ABS}"
+echo "[kelvin-plugin] entrypoint sha256: \${ENTRYPOINT_SHA}"
+EOF
+  chmod +x "${output_dir}/build.sh"
+
+  cat > "${output_dir}/payload/README.md" <<EOF
+Run ./build.sh to produce payload/${entrypoint_rel} from the Rust source in src/.
+EOF
+
+  cat > "${output_dir}/.gitignore" <<'EOF'
+/dist/
+/target/
+/payload/*.wasm
+EOF
+
+  cat > "${output_dir}/README.md" <<EOF
+# ${display_name}
+
+Generated by \`scripts/kelvin-plugin.sh new --runtime wasm_model_v1\`.
+
+This project uses only the public Kelvin model-plugin surface:
+
+- \`provider_profile\` routing in \`plugin.json\`
+- a tiny Rust guest compiled to \`.wasm\`
+- \`kelvin plugin test|pack|verify\` for local validation
+
+Quick commands:
+
+\`\`\`bash
+./build.sh
+kelvin plugin test --manifest ./plugin.json
+kelvin plugin pack --manifest ./plugin.json
+kelvin plugin verify --package ./dist/${plugin_id}-${plugin_version}.tar.gz
+\`\`\`
+
+Local development plugins can stay \`unsigned_local\`. Kelvin will warn on install
+but still allow them to load from a local plugin home.
+EOF
+}
+
 usage() {
   cat <<'USAGE'
 Usage: scripts/kelvin-plugin.sh <command> [options]
@@ -110,10 +304,13 @@ Options:
   --out <dir>               Output directory (default: ./plugin-<id>)
   --tool-name <name>        Tool runtime: tool name (default: derived from id)
   --provider-name <name>    Model runtime: provider name (default: derived from id)
-  --provider-profile <id>   Model runtime: host-enforced provider profile id (example: openai.responses)
-  --model-name <name>       Model runtime: model name (default: default)
+  --provider-profile <id>   Model runtime: host-enforced provider profile id (default: openai.responses)
+  --model-name <name>       Model runtime: model name (default: profile-specific default)
   --entrypoint <path>       Relative wasm payload path (default: plugin.wasm)
   --quality-tier <tier>     unsigned_local|signed_community|signed_trusted (default: unsigned_local)
+
+`wasm_model_v1` scaffolds also create Rust guest source and run a local build, so
+`cargo`, `rustup`, and `jq` must be available.
 USAGE
 }
 
@@ -394,16 +591,20 @@ cmd_new() {
   if [[ -z "${tool_name}" ]]; then
     tool_name="$(tr '.-' '_' <<< "${id}")"
   fi
+  if [[ "${runtime}" == "wasm_model_v1" && -z "${provider_profile}" ]]; then
+    provider_profile="openai.responses"
+  fi
   if [[ -z "${provider_name}" ]]; then
-    case "${provider_profile}" in
-      openai.responses) provider_name="openai" ;;
-      anthropic.messages) provider_name="anthropic" ;;
-      *) provider_name="$(tr '.-' '_' <<< "${id}")" ;;
-    esac
+    provider_name="$(provider_profile_default_provider_name "${provider_profile}" 2>/dev/null || tr '.-' '_' <<< "${id}")"
   fi
 
-  local capabilities runtime_extra
+  local capabilities runtime_extra network_allow_hosts timeout_ms crate_package_name crate_lib_name
   if [[ "${runtime}" == "wasm_model_v1" ]]; then
+    if [[ "${model_name}" == "default" ]]; then
+      model_name="$(provider_profile_default_model_name "${provider_profile}")"
+    fi
+    network_allow_hosts="$(provider_profile_default_hosts_json "${provider_profile}")"
+    timeout_ms="5000"
     capabilities='["model_provider","network_egress"]'
     runtime_extra="$(jq -cn \
       --arg provider_name "${provider_name}" \
@@ -414,6 +615,8 @@ cmd_new() {
         model_name:$model_name
       } + (if $provider_profile == "" then {} else {provider_profile:$provider_profile} end)')"
   else
+    network_allow_hosts='[]'
+    timeout_ms="2000"
     capabilities='["tool_provider"]'
     runtime_extra="$(jq -cn --arg tool_name "${tool_name}" '{tool_name:$tool_name}')"
   fi
@@ -425,6 +628,8 @@ cmd_new() {
     --arg runtime "${runtime}" \
     --arg entrypoint "${entrypoint}" \
     --arg quality_tier "${quality_tier}" \
+    --argjson network_allow_hosts "${network_allow_hosts}" \
+    --argjson timeout_ms "${timeout_ms}" \
     --argjson capabilities "${capabilities}" \
     --argjson runtime_extra "${runtime_extra}" \
     '{
@@ -445,10 +650,10 @@ cmd_new() {
       quality_tier:$quality_tier,
       capability_scopes:{
         fs_read_paths:[],
-        network_allow_hosts:[]
+        network_allow_hosts:$network_allow_hosts
       },
       operational_controls:{
-        timeout_ms:2000,
+        timeout_ms:$timeout_ms,
         max_retries:0,
         max_calls_per_minute:120,
         circuit_breaker_failures:3,
@@ -480,6 +685,16 @@ For signing:
 scripts/plugin-sign.sh --manifest "${out}/plugin.json" --private-key /path/to/ed25519-private.pem --publisher-id your.publisher.id --trust-policy-out "${out}/trusted_publishers.json"
 \`\`\`
 EOF
+
+  if [[ "${runtime}" == "wasm_model_v1" ]]; then
+    crate_package_name="$(tr '._' '-' <<< "${id}")-plugin"
+    crate_lib_name="$(tr '.-' '_' <<< "${id}")_plugin"
+    scaffold_model_plugin_project "${out}" "${id}" "${name}" "${version}" "${entrypoint}" "${crate_package_name}" "${crate_lib_name}"
+    (
+      cd "${out}"
+      ./build.sh >/dev/null
+    )
+  fi
 
   echo "[kelvin-plugin] scaffold created at ${out}"
 }
