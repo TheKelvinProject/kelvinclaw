@@ -43,7 +43,9 @@ cd ./plugin-acme.anthropic
 ./build.sh
 ../scripts/kelvin-plugin.sh test --manifest ./plugin.json
 ../scripts/kelvin-plugin.sh pack --manifest ./plugin.json
+../scripts/kelvin-plugin.sh install --package ./dist/acme.anthropic-0.1.0.tar.gz
 ../scripts/kelvin-plugin.sh verify --package ./dist/acme.anthropic-0.1.0.tar.gz
+../scripts/kelvin-plugin.sh smoke --manifest ./plugin.json
 ```
 
 The same flow in Docker:
@@ -59,7 +61,9 @@ scripts/plugin-author-docker.sh -- bash -lc '
   ./build.sh
   ../scripts/kelvin-plugin.sh test --manifest ./plugin.json
   ../scripts/kelvin-plugin.sh pack --manifest ./plugin.json
+  ../scripts/kelvin-plugin.sh install --package ./dist/acme.anthropic-0.1.0.tar.gz
   ../scripts/kelvin-plugin.sh verify --package ./dist/acme.anthropic-0.1.0.tar.gz
+  ../scripts/kelvin-plugin.sh smoke --manifest ./plugin.json
 '
 ```
 
@@ -103,22 +107,12 @@ scripts/kelvin-plugin.sh new \
 Local development plugins can stay `unsigned_local`:
 
 ```bash
-scripts/plugin-install.sh --package ./dist/acme.anthropic-0.1.0.tar.gz
+scripts/kelvin-plugin.sh install --package ./dist/acme.anthropic-0.1.0.tar.gz
+scripts/kelvin-plugin.sh smoke --manifest ./plugin.json
 ```
 
 Kelvin prints a warning for `unsigned_local`, but still installs the package so
 you can develop without access to the first-party signing platform.
-
-Run Kelvin with the plugin:
-
-```bash
-KELVIN_PLUGIN_HOME="${HOME}/.kelvinclaw/plugins" \
-KELVIN_TRUST_POLICY_PATH="${HOME}/.kelvinclaw/trusted_publishers.json" \
-cargo run -p kelvin-host -- \
-  --prompt "Summarize KelvinClaw in one sentence." \
-  --model-provider acme.anthropic \
-  --memory fallback
-```
 
 If you are validating in Docker, run the same commands through
 `scripts/plugin-author-docker.sh -- ...` so the repo path and caches stay

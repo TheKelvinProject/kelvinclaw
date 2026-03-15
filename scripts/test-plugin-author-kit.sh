@@ -42,14 +42,19 @@ SHA="$(sha256_file ./plugin-acme/payload/plugin.wasm)"
 jq --arg sha "${SHA}" '.entrypoint_sha256 = $sha' ./plugin-acme/plugin.json > ./plugin-acme/plugin.json.tmp
 mv ./plugin-acme/plugin.json.tmp ./plugin-acme/plugin.json
 
+"${PLUGIN_CLI}" install --help >/dev/null
+"${PLUGIN_CLI}" index-install --help >/dev/null
+"${PLUGIN_CLI}" smoke --help >/dev/null
 "${PLUGIN_CLI}" test --manifest ./plugin-acme/plugin.json --core-versions "0.1.0,0.2.0"
 "${PLUGIN_CLI}" pack --manifest ./plugin-acme/plugin.json
 "${PLUGIN_CLI}" verify --package ./plugin-acme/dist/acme.echo-0.1.0.tar.gz
+"${PLUGIN_CLI}" install --package ./plugin-acme/dist/acme.echo-0.1.0.tar.gz --plugin-home ./plugin-home --force >/dev/null
 
 "${PLUGIN_CLI}" new --id acme.anthropic --name "Acme Anthropic" --runtime wasm_model_v1 --provider-profile anthropic.messages --out ./plugin-anthropic
 "${PLUGIN_CLI}" test --manifest ./plugin-anthropic/plugin.json --core-versions "0.1.0,0.2.0"
 "${PLUGIN_CLI}" pack --manifest ./plugin-anthropic/plugin.json
 "${PLUGIN_CLI}" verify --package ./plugin-anthropic/dist/acme.anthropic-0.1.0.tar.gz
+"${PLUGIN_CLI}" install --package ./plugin-anthropic/dist/acme.anthropic-0.1.0.tar.gz --plugin-home ./plugin-home --force >/dev/null
 
 "${PLUGIN_CLI}" new \
   --id acme.openrouter \
@@ -68,6 +73,7 @@ mv ./plugin-acme/plugin.json.tmp ./plugin-acme/plugin.json
 "${PLUGIN_CLI}" test --manifest ./plugin-openrouter/plugin.json --core-versions "0.1.0,0.2.0"
 "${PLUGIN_CLI}" pack --manifest ./plugin-openrouter/plugin.json
 "${PLUGIN_CLI}" verify --package ./plugin-openrouter/dist/acme.openrouter-0.1.0.tar.gz
+"${PLUGIN_CLI}" install --package ./plugin-openrouter/dist/acme.openrouter-0.1.0.tar.gz --plugin-home ./plugin-home --force >/dev/null
 
 # Signed-community tier should fail without plugin.sig.
 jq '.quality_tier = "signed_community" | .publisher = "acme"' ./plugin-acme/plugin.json > ./plugin-acme/plugin.json.tmp

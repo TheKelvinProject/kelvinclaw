@@ -16,8 +16,10 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
       build-essential \
       ca-certificates \
       curl \
+      gcc-x86-64-linux-gnu \
       git \
       jq \
+      libc6-dev-amd64-cross \
       pkg-config \
       tar \
       xz-utils \

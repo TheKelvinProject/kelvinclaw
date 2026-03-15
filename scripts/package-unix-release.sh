@@ -7,6 +7,7 @@ TARGET=""
 VERSION=""
 TARGET_DIR="${ROOT_DIR}/target/releases"
 EMIT_DEB="false"
+SKIP_SMOKE_TEST="false"
 
 # shellcheck source=scripts/lib/rust-toolchain-path.sh
 source "${ROOT_DIR}/scripts/lib/rust-toolchain-path.sh"
@@ -25,6 +26,7 @@ Options:
   --target-dir <path>      Cargo target dir (default: ./target/releases)
   --version <semver>       Override version label (default: workspace version)
   --emit-deb               Also build a .deb package for Linux targets
+  --skip-smoke-test        Skip archive binary smoke tests
   -h, --help               Show help
 USAGE
 }
@@ -35,6 +37,36 @@ require_cmd() {
     echo "Missing required command: ${name}" >&2
     exit 1
   fi
+}
+
+build_release_binaries() {
+  local target="$1"
+  local target_dir="$2"
+  CARGO_TARGET_DIR="${target_dir}" cargo build \
+    --locked \
+    --release \
+    --target "${target}" \
+    -p kelvin-host \
+    -p kelvin-gateway \
+    -p kelvin-registry \
+    -p kelvin-memory-controller \
+    --features kelvin-gateway/memory_rpc
+}
+
+target_architecture() {
+  case "$1" in
+    x86_64-unknown-linux-gnu|x86_64-apple-darwin) printf '%s\n' 'x86_64' ;;
+    aarch64-unknown-linux-gnu|aarch64-apple-darwin) printf '%s\n' 'aarch64' ;;
+    *) echo "Unsupported target triple: $1" >&2; exit 1 ;;
+  esac
+}
+
+host_architecture() {
+  case "$(uname -m)" in
+    x86_64|amd64) printf '%s\n' 'x86_64' ;;
+    arm64|aarch64) printf '%s\n' 'aarch64' ;;
+    *) uname -m ;;
+  esac
 }
 
 sha256_file() {
@@ -189,6 +221,10 @@ while [[ $# -gt 0 ]]; do
       EMIT_DEB="true"
       shift
       ;;
+    --skip-smoke-test)
+      SKIP_SMOKE_TEST="true"
+      shift
+      ;;
     -h|--help)
       usage
       exit 0
@@ -233,10 +269,7 @@ mkdir -p "${OUTPUT_DIR}" "${STAGE_ROOT}/bin" "${STAGE_ROOT}/share"
 
 rustup target add "${TARGET}" >/dev/null
 
-CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --locked --release --target "${TARGET}" -p kelvin-host
-CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --locked --release --target "${TARGET}" -p kelvin-gateway --features memory_rpc
-CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --locked --release --target "${TARGET}" -p kelvin-registry
-CARGO_TARGET_DIR="${TARGET_DIR}" cargo build --locked --release --target "${TARGET}" -p kelvin-memory-controller
+build_release_binaries "${TARGET}" "${TARGET_DIR}"
 
 cp "${TARGET_DIR}/${TARGET}/release/kelvin-host" "${STAGE_ROOT}/bin/"
 cp "${TARGET_DIR}/${TARGET}/release/kelvin-gateway" "${STAGE_ROOT}/bin/"
@@ -263,7 +296,13 @@ EOF
 rm -f "${ARCHIVE_PATH}" "${CHECKSUM_PATH}"
 create_tar_gz "${ARCHIVE_PATH}" "${STAGE_PARENT}" "${ARCHIVE_ROOT}"
 printf '%s  %s\n' "$(sha256_file "${ARCHIVE_PATH}")" "$(basename "${ARCHIVE_PATH}")" > "${CHECKSUM_PATH}"
-smoke_test_archive "${ARCHIVE_PATH}" "${ARCHIVE_ROOT}" "" "kelvin"
+if [[ "${SKIP_SMOKE_TEST}" == "true" ]]; then
+  echo "Skipping archive smoke test (--skip-smoke-test)"
+elif [[ "$(target_architecture "${TARGET}")" != "$(host_architecture)" ]]; then
+  echo "Skipping archive smoke test for cross-arch target ${TARGET} on host $(host_architecture)"
+else
+  smoke_test_archive "${ARCHIVE_PATH}" "${ARCHIVE_ROOT}" "" "kelvin"
+fi
 
 if [[ "${EMIT_DEB}" == "true" ]]; then
   create_deb_package "${STAGE_ROOT}" "${VERSION}" "${TARGET}" "${OUTPUT_DIR}"

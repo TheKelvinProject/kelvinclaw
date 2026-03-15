@@ -235,6 +235,7 @@ Expected result:
 - Sample WASM skill builds successfully.
 - WASM runner executes the module under sandbox policy.
 - Plugin author commands scaffold and validate plugin package structure without touching root crates.
+- `kelvin plugin install` and `kelvin plugin smoke` cover the local package-install and model-runtime smoke path without requiring host flag memorization.
 - Model plugins can be scaffolded, built, packed, and locally installed through the same public SDK surface.
 
 ## Verify All Tracks

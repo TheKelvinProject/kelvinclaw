@@ -17,13 +17,16 @@ Then use:
 kelvin plugin new
 kelvin plugin test
 kelvin plugin pack
+kelvin plugin install
+kelvin plugin index-install
 kelvin plugin verify
+kelvin plugin smoke
 ```
 
 Equivalent direct command:
 
 ```bash
-scripts/kelvin-plugin.sh <new|test|pack|verify> ...
+scripts/kelvin-plugin.sh <new|test|pack|install|index-install|verify|smoke> ...
 ```
 
 If you want a reproducible container instead of local Rust setup, use the
@@ -41,6 +44,7 @@ That is the supported Docker authoring path for plugin contributors.
 scripts/kelvin-plugin.sh new --id acme.echo --name "Acme Echo" --runtime wasm_tool_v1
 scripts/kelvin-plugin.sh test --manifest ./plugin-acme.echo/plugin.json
 scripts/kelvin-plugin.sh pack --manifest ./plugin-acme.echo/plugin.json
+scripts/kelvin-plugin.sh install --package ./plugin-acme.echo/dist/acme.echo-0.1.0.tar.gz
 scripts/kelvin-plugin.sh verify --package ./plugin-acme.echo/dist/acme.echo-0.1.0.tar.gz
 ```
 
@@ -83,6 +87,19 @@ scripts/plugin-author-docker.sh -- bash -lc 'cd examples/kelvin-anthropic-plugin
 
 Local/community development plugins can stay `unsigned_local`. Kelvin warns on
 install for that quality tier, but still allows the plugin to install.
+
+The supported local loop is:
+
+```bash
+scripts/kelvin-plugin.sh pack --manifest ./plugin.json
+scripts/kelvin-plugin.sh install --package ./dist/<id>-<version>.tar.gz
+scripts/kelvin-plugin.sh smoke --manifest ./plugin.json
+```
+
+`smoke` runs `./build.sh` when present, packs the plugin, installs it into a
+local plugin home, auto-installs `kelvin.cli` if needed, and then runs
+`kelvin-host`. If the model provider API key is missing, a clear
+`<ENV> is required` failure is treated as a successful no-key smoke.
 
 ```bash
 AWS_PROFILE=ah-willsarg-iam scripts/plugin-sign.sh \

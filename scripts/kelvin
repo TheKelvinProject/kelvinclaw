@@ -6,7 +6,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 usage() {
   cat <<'USAGE'
 Usage:
-  kelvin plugin <new|test|pack|verify> [args...]
+  kelvin plugin <new|test|pack|install|index-install|verify|smoke> [args...]
 
 Tip:
   export PATH="$PWD/scripts:$PATH"

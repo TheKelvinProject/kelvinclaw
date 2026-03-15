@@ -332,7 +332,11 @@ Commands:
   new       Create a new plugin package scaffold.
   test      Validate plugin manifest/layout and compatibility matrix.
   pack      Build a .tar.gz plugin package from manifest + payload.
+  install   Install a local plugin package into a plugin home.
+  index-install
+            Install a published plugin package from a plugin index.
   verify    Verify package integrity and policy-tier requirements.
+  smoke     Build, pack, install, and smoke-test a model plugin locally.
 
 Run with --help after any command for command-specific options.
 USAGE
@@ -362,10 +366,39 @@ Options:
   --model-name <name>       Model runtime: model name (default: protocol-family default)
   --entrypoint <path>       Relative wasm payload path (default: plugin.wasm)
   --quality-tier <tier>     unsigned_local|signed_community|signed_trusted (default: unsigned_local)
+  --force                   Overwrite an existing non-empty output directory
 
 `wasm_model_v1` scaffolds emit a structured `provider_profile` object, create a
 Rust guest source project, and run a local build, so `cargo`, `rustup`, and
 `jq` must be available.
+USAGE
+}
+
+install_usage() {
+  cat <<'USAGE'
+Usage: scripts/kelvin-plugin.sh install --package <plugin-package.tar.gz> [options]
+
+Options:
+  --package <path>          Plugin package tarball (.tar.gz)
+  --plugin-home <dir>       Install root (default: $KELVIN_PLUGIN_HOME or ~/.kelvinclaw/plugins)
+  --force                   Overwrite existing plugin version
+USAGE
+}
+
+index_install_usage() {
+  cat <<'USAGE'
+Usage: scripts/kelvin-plugin.sh index-install --plugin <id> [options]
+
+Options:
+  --plugin <id>             Plugin id from index
+  --version <version>       Specific version to install
+  --index-url <url>         Plugin index JSON URL
+  --registry-url <url>      Hosted registry base URL (uses /v1/index.json)
+  --plugin-home <dir>       Install root (default: $KELVIN_PLUGIN_HOME or ~/.kelvinclaw/plugins)
+  --trust-policy-path <path>
+                            Trust policy file to merge/update
+  --force                   Reinstall even if version exists
+  --min-quality-tier <tier> unsigned_local|signed_community|signed_trusted
 USAGE
 }
 
@@ -405,6 +438,32 @@ Options:
   --json                    Emit machine-readable output JSON
 
 Note: you must pass either --package or --manifest.
+USAGE
+}
+
+smoke_usage() {
+  cat <<'USAGE'
+Usage: scripts/kelvin-plugin.sh smoke --manifest <plugin.json> [options]
+
+Options:
+  --manifest <path>         Required path to plugin.json
+  --plugin-home <dir>       Plugin home to install into (default: temporary)
+  --trust-policy <path>     Trust policy path for CLI plugin install (default: temporary)
+  --workspace <dir>         Workspace directory for kelvin-host (default: manifest directory)
+  --prompt <text>           Prompt for the smoke run
+                            (default: Say hello in one sentence.)
+  --core-versions <csv>     Core versions matrix for validation (default: 0.1.0)
+  --skip-cli-install        Do not auto-install kelvin.cli from the plugin index
+  --no-build                Skip running ./build.sh before packing
+  --keep-temp               Keep temporary smoke artifacts on disk
+  --json                    Emit machine-readable result JSON
+
+Behavior:
+  - If build.sh exists next to plugin.json, Kelvin runs it unless --no-build is set.
+  - Kelvin packs and installs the plugin locally.
+  - Kelvin auto-installs kelvin.cli unless --skip-cli-install is set.
+  - If provider_profile.api_key_env is unset, a clear "<ENV> is required" failure
+    is treated as a successful no-key smoke.
 USAGE
 }
 
@@ -512,6 +571,7 @@ validate_manifest_and_layout() {
       (.provider_profile | type=="object") and
       (.provider_profile.id | type=="string" and length>0) and
       (.provider_profile.provider_name | type=="string" and length>0) and
+      ((.provider_name == null) or (.provider_name == .provider_profile.provider_name)) and
       (.provider_profile.protocol_family | type=="string" and (. == "openai_responses" or . == "openai_chat_completions" or . == "anthropic_messages")) and
       (.provider_profile.api_key_env | type=="string" and length>0) and
       (.provider_profile.base_url_env | type=="string" and length>0) and
@@ -620,6 +680,7 @@ cmd_new() {
   local provider_name="" provider_profile_id="" protocol_family="" api_key_env="" base_url_env=""
   local default_base_url="" endpoint_path="" auth_header="" auth_scheme="bearer"
   local model_name="default" entrypoint="plugin.wasm" quality_tier="unsigned_local"
+  local force="0"
   local -a allow_hosts=()
 
   while [[ $# -gt 0 ]]; do
@@ -643,6 +704,7 @@ cmd_new() {
       --model-name) model_name="${2:?missing value for --model-name}"; shift 2 ;;
       --entrypoint) entrypoint="${2:?missing value for --entrypoint}"; shift 2 ;;
       --quality-tier) quality_tier="${2:?missing value for --quality-tier}"; shift 2 ;;
+      --force) force="1"; shift ;;
       -h|--help) new_usage; exit 0 ;;
       *) echo "Unknown argument: $1" >&2; new_usage; exit 1 ;;
     esac
@@ -668,6 +730,21 @@ cmd_new() {
 
   if [[ -z "${out}" ]]; then
     out="./plugin-${id}"
+  fi
+  if [[ -e "${out}" && "${force}" != "1" ]]; then
+    if [[ -d "${out}" ]] && [[ -n "$(find "${out}" -mindepth 1 -maxdepth 1 -print -quit 2>/dev/null)" ]]; then
+      echo "Refusing to overwrite non-empty output directory: ${out}" >&2
+      echo "Re-run with --force if you want to replace it." >&2
+      exit 1
+    fi
+    if [[ ! -d "${out}" ]]; then
+      echo "Refusing to overwrite existing path: ${out}" >&2
+      echo "Re-run with --force if you want to replace it." >&2
+      exit 1
+    fi
+  fi
+  if [[ "${force}" == "1" && -e "${out}" ]]; then
+    rm -rf "${out}"
   fi
   mkdir -p "${out}/payload"
   if [[ -z "${tool_name}" ]]; then
@@ -832,6 +909,13 @@ Quick commands:
 \`\`\`bash
 scripts/kelvin-plugin.sh test --manifest "${out}/plugin.json"
 scripts/kelvin-plugin.sh pack --manifest "${out}/plugin.json"
+scripts/kelvin-plugin.sh install --package "${out}/dist/${id}-${version}.tar.gz"
+\`\`\`
+
+For a local runtime smoke:
+
+\`\`\`bash
+scripts/kelvin-plugin.sh smoke --manifest "${out}/plugin.json"
 \`\`\`
 
 For signing:
@@ -1004,6 +1088,206 @@ cmd_verify() {
   fi
 }
 
+cmd_install() {
+  local -a args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --package|--plugin-home)
+        args+=("$1" "${2:?missing value for $1}")
+        shift 2
+        ;;
+      --force)
+        args+=("$1")
+        shift
+        ;;
+      -h|--help)
+        install_usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown argument: $1" >&2
+        install_usage
+        exit 1
+        ;;
+    esac
+  done
+  exec "${ROOT_DIR}/scripts/plugin-install.sh" "${args[@]}"
+}
+
+cmd_index_install() {
+  local -a args=()
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --plugin|--version|--index-url|--registry-url|--plugin-home|--trust-policy-path|--min-quality-tier)
+        args+=("$1" "${2:?missing value for $1}")
+        shift 2
+        ;;
+      --force)
+        args+=("$1")
+        shift
+        ;;
+      -h|--help)
+        index_install_usage
+        exit 0
+        ;;
+      *)
+        echo "Unknown argument: $1" >&2
+        index_install_usage
+        exit 1
+        ;;
+    esac
+  done
+  exec "${ROOT_DIR}/scripts/plugin-index-install.sh" "${args[@]}"
+}
+
+cmd_smoke() {
+  local manifest="" plugin_home="" trust_policy="" workspace="" prompt="Say hello in one sentence."
+  local core_versions="${DEFAULT_CORE_VERSIONS}" skip_cli_install="0" no_build="0" keep_temp="0" json_output="0"
+
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --manifest) manifest="${2:?missing value for --manifest}"; shift 2 ;;
+      --plugin-home) plugin_home="${2:?missing value for --plugin-home}"; shift 2 ;;
+      --trust-policy) trust_policy="${2:?missing value for --trust-policy}"; shift 2 ;;
+      --workspace) workspace="${2:?missing value for --workspace}"; shift 2 ;;
+      --prompt) prompt="${2:?missing value for --prompt}"; shift 2 ;;
+      --core-versions) core_versions="${2:?missing value for --core-versions}"; shift 2 ;;
+      --skip-cli-install) skip_cli_install="1"; shift ;;
+      --no-build) no_build="1"; shift ;;
+      --keep-temp) keep_temp="1"; shift ;;
+      --json) json_output="1"; shift ;;
+      -h|--help) smoke_usage; exit 0 ;;
+      *)
+        echo "Unknown argument: $1" >&2
+        smoke_usage
+        exit 1
+        ;;
+    esac
+  done
+
+  [[ -n "${manifest}" ]] || {
+    echo "--manifest is required" >&2
+    smoke_usage
+    exit 1
+  }
+
+  require_cmd cargo
+  if [[ "${skip_cli_install}" != "1" ]]; then
+    require_cmd curl
+  fi
+
+  validate_manifest_and_layout "${manifest}" "${core_versions}" "${DEFAULT_CORE_API_VERSION}" "0"
+
+  local manifest_dir runtime plugin_id api_key_env temp_dir package_path host_output
+  local keep_temp_value=""
+  manifest_dir="$(cd "$(dirname "${manifest}")" && pwd)"
+  runtime="$(jq -er '.runtime // "wasm_tool_v1"' "${manifest}")"
+  plugin_id="$(jq -er '.id' "${manifest}")"
+  if [[ "${runtime}" != "wasm_model_v1" ]]; then
+    echo "smoke currently supports wasm_model_v1 plugins only" >&2
+    exit 1
+  fi
+  api_key_env="$(jq -er '.provider_profile.api_key_env' "${manifest}")"
+
+  temp_dir="$(mktemp -d)"
+  keep_temp_value="${keep_temp}"
+  trap 'if [[ "'"${keep_temp_value}"'" != "1" ]]; then rm -rf "'"${temp_dir}"'"; fi' EXIT
+
+  if [[ -z "${plugin_home}" ]]; then
+    plugin_home="${temp_dir}/plugins"
+  fi
+  if [[ -z "${trust_policy}" ]]; then
+    trust_policy="${temp_dir}/trusted_publishers.json"
+  fi
+  if [[ -z "${workspace}" ]]; then
+    workspace="${manifest_dir}"
+  fi
+  package_path="${temp_dir}/$(jq -er '.id' "${manifest}")-$(jq -er '.version' "${manifest}").tar.gz"
+  host_output="${temp_dir}/kelvin-host.log"
+
+  mkdir -p "${plugin_home}" "$(dirname "${trust_policy}")"
+
+  if [[ "${no_build}" != "1" && -x "${manifest_dir}/build.sh" ]]; then
+    (
+      cd "${manifest_dir}"
+      ./build.sh >/dev/null
+    )
+  fi
+
+  cmd_pack --manifest "${manifest}" --output "${package_path}" --core-versions "${core_versions}" >/dev/null
+  "${ROOT_DIR}/scripts/plugin-install.sh" --package "${package_path}" --plugin-home "${plugin_home}" --force >/dev/null
+
+  if [[ "${skip_cli_install}" != "1" && ! -d "${plugin_home}/kelvin.cli/current" ]]; then
+    "${ROOT_DIR}/scripts/plugin-index-install.sh" \
+      --plugin kelvin.cli \
+      --plugin-home "${plugin_home}" \
+      --trust-policy-path "${trust_policy}" \
+      --min-quality-tier signed_trusted \
+      --force >/dev/null
+  fi
+
+  set +e
+  (
+    cd "${ROOT_DIR}"
+    KELVIN_PLUGIN_HOME="${plugin_home}" \
+    KELVIN_TRUST_POLICY_PATH="${trust_policy}" \
+    cargo run -q -p kelvin-host -- \
+      --prompt "${prompt}" \
+      --workspace "${workspace}" \
+      --memory fallback \
+      --model-provider "${plugin_id}"
+  ) >"${host_output}" 2>&1
+  local status=$?
+  set -e
+
+  local key_present="0"
+  [[ -n "${!api_key_env:-}" ]] && key_present="1"
+
+  if [[ "${key_present}" == "0" ]]; then
+    if grep -Fq "${api_key_env} is required" "${host_output}"; then
+      if [[ "${json_output}" == "1" ]]; then
+        jq -cn \
+          --arg plugin_id "${plugin_id}" \
+          --arg api_key_env "${api_key_env}" \
+          --arg plugin_home "${plugin_home}" \
+          --arg trust_policy "${trust_policy}" \
+          --arg workspace "${workspace}" \
+          '{"ok":true,"mode":"missing_key_expected","plugin_id":$plugin_id,"api_key_env":$api_key_env,"plugin_home":$plugin_home,"trust_policy":$trust_policy,"workspace":$workspace}'
+      else
+        echo "[kelvin-plugin] smoke ok (${api_key_env} missing path)"
+        echo "  plugin:      ${plugin_id}"
+        echo "  plugin_home: ${plugin_home}"
+        echo "  trust:       ${trust_policy}"
+      fi
+      return 0
+    fi
+    cat "${host_output}" >&2
+    echo "smoke failed: expected a clear '${api_key_env} is required' message when ${api_key_env} is unset" >&2
+    exit 1
+  fi
+
+  if [[ "${status}" -ne 0 ]]; then
+    cat "${host_output}" >&2
+    echo "smoke failed: kelvin-host exited with status ${status}" >&2
+    exit 1
+  fi
+
+  if [[ "${json_output}" == "1" ]]; then
+    jq -cn \
+      --arg plugin_id "${plugin_id}" \
+      --arg api_key_env "${api_key_env}" \
+      --arg plugin_home "${plugin_home}" \
+      --arg trust_policy "${trust_policy}" \
+      --arg workspace "${workspace}" \
+      '{"ok":true,"mode":"live_key_success","plugin_id":$plugin_id,"api_key_env":$api_key_env,"plugin_home":$plugin_home,"trust_policy":$trust_policy,"workspace":$workspace}'
+  else
+    echo "[kelvin-plugin] smoke ok (${api_key_env} present path)"
+    echo "  plugin:      ${plugin_id}"
+    echo "  plugin_home: ${plugin_home}"
+    echo "  trust:       ${trust_policy}"
+  fi
+}
+
 main() {
   require_cmd jq
   require_cmd tar
@@ -1018,7 +1302,10 @@ main() {
     new) cmd_new "$@" ;;
     test) cmd_test "$@" ;;
     pack) cmd_pack "$@" ;;
+    install) cmd_install "$@" ;;
+    index-install) cmd_index_install "$@" ;;
     verify) cmd_verify "$@" ;;
+    smoke) cmd_smoke "$@" ;;
     -h|--help) usage ;;
     *) echo "Unknown command: ${command}" >&2; usage; exit 1 ;;
   esac

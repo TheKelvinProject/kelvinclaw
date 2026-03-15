@@ -541,6 +541,7 @@ export PATH="$PWD/scripts:$PATH"
 kelvin plugin new --id acme.echo --name "Acme Echo" --runtime wasm_tool_v1
 kelvin plugin test --manifest ./plugin-acme.echo/plugin.json
 kelvin plugin pack --manifest ./plugin-acme.echo/plugin.json
+kelvin plugin install --package ./plugin-acme.echo/dist/acme.echo-0.1.0.tar.gz
 kelvin plugin verify --package ./plugin-acme.echo/dist/acme.echo-0.1.0.tar.gz
 ```
 
@@ -553,7 +554,9 @@ cd ./plugin-acme.anthropic
 ./build.sh
 kelvin plugin test --manifest ./plugin.json
 kelvin plugin pack --manifest ./plugin.json
+kelvin plugin install --package ./dist/acme.anthropic-0.1.0.tar.gz
 kelvin plugin verify --package ./dist/acme.anthropic-0.1.0.tar.gz
+kelvin plugin smoke --manifest ./plugin.json
 ```
 
 Community/local plugins can stay `unsigned_local`. Kelvin warns on install, but

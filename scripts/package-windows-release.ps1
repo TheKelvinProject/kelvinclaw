@@ -41,6 +41,16 @@ function Sha256-File([string]$Path) {
     return (Get-FileHash -Algorithm SHA256 -Path $Path).Hash.ToLowerInvariant()
 }
 
+function Build-ReleaseBinaries([string]$Triple, [string]$TargetDirPath) {
+    $env:CARGO_TARGET_DIR = $TargetDirPath
+    cargo build --locked --release --target $Triple `
+      -p kelvin-host `
+      -p kelvin-gateway `
+      -p kelvin-registry `
+      -p kelvin-memory-controller `
+      --features kelvin-gateway/memory_rpc
+}
+
 function Smoke-TestZip([string]$ZipPath, [string]$RootName) {
     $WorkDir = Join-Path ([System.IO.Path]::GetTempPath()) ([System.Guid]::NewGuid().ToString())
     New-Item -ItemType Directory -Force -Path $WorkDir | Out-Null
@@ -76,11 +86,7 @@ try {
 
     rustup target add $Target | Out-Null
 
-    $env:CARGO_TARGET_DIR = $TargetDir
-    cargo build --locked --release --target $Target -p kelvin-host
-    cargo build --locked --release --target $Target -p kelvin-gateway --features memory_rpc
-    cargo build --locked --release --target $Target -p kelvin-registry
-    cargo build --locked --release --target $Target -p kelvin-memory-controller
+    Build-ReleaseBinaries -Triple $Target -TargetDirPath $TargetDir
 
     Copy-Item (Join-Path $TargetDir "$Target\\release\\kelvin-host.exe") (Join-Path $StageRoot "bin\\")
     Copy-Item (Join-Path $TargetDir "$Target\\release\\kelvin-gateway.exe") (Join-Path $StageRoot "bin\\")

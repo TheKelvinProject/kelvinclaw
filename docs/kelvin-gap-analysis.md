@@ -211,3 +211,4 @@ Still open:
 ## Near-Term TODO (Execution Order)
 
 1. Automate publisher key rotation pipelines for hosted plugin/trust-policy distribution.
+2. Republish legacy first-party plugin tarballs that still emit `LIBARCHIVE.xattr.com.apple.provenance` warnings on Linux installs, then update the official release plugin pins to the cleaned package versions.
